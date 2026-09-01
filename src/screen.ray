@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
 // 1942 — the frame builder + line-diff painter. A glyph grid is stamped
 // (scrolling ocean with parallax islands, then enemies, bullets, enemy fire,
 // and the fighter on top), rendered to fixed lines, and only the changed

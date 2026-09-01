@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
 // 1942 — the 30 fps loop with two clocks: the frame (repaint on change) and
 // the world tick (bullets, enemies, spawns). The plane flies on its own
 // movement clock, decoupled from the OS key-repeat stream so changing

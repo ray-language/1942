@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
 // 1942 — a Namco-WSG-style synth, pure and clock-free, in the shape rallyx
 // proved: 32-entry 4-bit wavetable voices plus an LFSR noise voice, read
 // through phase accumulators and mixed to s16le mono. On top, a tracker: a

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
 // The rules, clock-free and seeded: spawns, flying and clamping, auto-fire,
 // bullets downing enemies, the loop-the-loop's invincibility, taking a hit,
 // stage progression, and the frame/panel contract.

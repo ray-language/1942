@@ -127,3 +127,8 @@ Estructura: `src/main.ray` · `shmup.ray` (reglas puras) · `screen.ray`
 (frame + diff) · `app.ray` (bucle + bench + sync de audio) · `wsg.ray` (synth
 puro) · `music.ray` (fibra de audio). Los tests de synth corren con
 `RAY_AUDIO_SINK=null` para CI.
+
+## Licencia
+
+[Apache License 2.0](LICENSE) — la melodía es un homenaje a la marcha del
+arcade; la original es de Capcom y no se transcribe ni se distribuye.

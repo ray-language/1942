@@ -163,8 +163,17 @@ fn stamp_blast(glyph: [string], g: shmup.Game, bg: int, cx: int, cy: int, r: int
     }
 }
 
-// The boss carrier: a 3-wide, 2-tall hull with a glowing reactor core.
+// The boss carrier: a 3-wide, 2-tall hull with a glowing reactor core whose
+// colour tells its phase — cyan while fresh, amber mid-fight, hot magenta in
+// its final, most dangerous third.
 fn stamp_boss(glyph: [string], g: shmup.Game, bg: int) {
+    let core = if (shmup.boss_phase(g) >= 2) {
+        201
+    } else if (shmup.boss_phase(g) == 1) {
+        226
+    } else {
+        51
+    };
     var dy = 0;
     while (dy <= 1) {
         var dx = 0 - 1;
@@ -174,7 +183,7 @@ fn stamp_boss(glyph: [string], g: shmup.Game, bg: int) {
             if (x >= 0 && x < g.w && y >= 0 && y < g.h) {
                 var c = cellb(bg, 160, "██");
                 if (dy == 0 && dx == 0) {
-                    c = cellb(bg, 51, "◉◉");
+                    c = cellb(bg, core, "◉◉");
                 } else if (dy == 1) {
                     c = cellb(bg, 208, "██");
                 }

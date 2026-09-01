@@ -383,6 +383,63 @@ fn the_boss_takes_hits_and_falls() {
 }
 
 @test
+fn the_boss_shifts_pattern_as_its_hull_drops() {
+    let g = fresh();
+    g.boss_max = 30;
+    // Fresh: aimed spread. Mid: raking fan. Last third: desperation strafe.
+    g.boss_hp = 30;
+    assert_eq(shmup.boss_phase(g), 0);
+    g.boss_hp = 15;
+    assert_eq(shmup.boss_phase(g), 1);
+    g.boss_hp = 5;
+    assert_eq(shmup.boss_phase(g), 2);
+}
+
+@test
+fn a_live_boss_bars_the_stage_gate() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.invuln = 999;
+    // Reach stage 3 with a carrier on the board.
+    g.killed = shmup.KILLS_PER_STAGE * 2;
+    shmup.tick(g);
+    assert_eq(g.stage, 3);
+    assert(g.boss_hp > 0);
+    // Pile up several stages' worth of kills; while the boss lives, the gate
+    // holds at 3 no matter the count.
+    g.killed = shmup.KILLS_PER_STAGE * 5;
+    g.enemies = noone;
+    shmup.tick(g);
+    assert_eq(g.stage, 3);
+}
+
+@test
+fn downing_the_boss_closes_the_stage() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.killed = shmup.KILLS_PER_STAGE * 2;
+    shmup.tick(g);
+    assert_eq(g.stage, 3);
+    let full = g.boss_max;
+    // Hammer the carrier down.
+    var i = 0;
+    while (i < full + 5) {
+        g.enemies = noone;
+        g.invuln = 999;
+        var bs: [shmup.Bullet] = [];
+        bs.push(shmup.Bullet { x: g.boss_x, y: g.boss_y + 1 });
+        g.bullets = bs;
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert_eq(g.boss_hp, 0);
+    // The gate opens exactly one stage — never skipping ahead.
+    assert_eq(g.stage, 4);
+}
+
+@test
 fn frame_renders_with_boss_and_banner() {
     let g = fresh();
     var noone: [shmup.Enemy] = [];

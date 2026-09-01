@@ -386,19 +386,69 @@ fn spawn_boss(g: Game) {
 
 fn boss_defeated(g: Game) {
     g.score = g.score + BOSS_POINTS;
-    g.killed = g.killed + 1;
     g.boss_fx = BOSS_FX_TICKS;
     g.boss_hp = 0;
+    // Downing the carrier is what CLOSES its stage: bank the kill count up to
+    // the next stage's threshold so advance_stage rolls over exactly once (the
+    // gate below held it here; any overkill from the fight folds in, never
+    // skipping a stage).
+    g.killed = g.stage * KILLS_PER_STAGE;
     // The carrier's cargo: a guaranteed power-up where it fell.
     g.pickups.push(Pickup { x: clamp(g.boss_x, 0, g.w - 1), y: g.boss_y });
 }
 
-// The boss sweeps side to side and rains an aimed three-shot spread.
+// Which of three escalating firing patterns the carrier is in, read off its
+// remaining hull: a measured aimed spread while fresh (top third gone), a
+// raking fan through the middle, and a frantic point-blank strafe in its last
+// third. Public so the renderer can tint the reactor by phase.
+pub fn boss_phase(g: Game) -> int {
+    if (g.boss_max <= 0) {
+        return 0;
+    }
+    if (g.boss_hp * 3 > g.boss_max * 2) {
+        0
+    } else if (g.boss_hp * 3 > g.boss_max) {
+        1
+    } else {
+        2
+    }
+}
+
+// The carrier's three firing patterns, one per phase, all lobbed from just
+// below its belly.
+fn boss_fire(g: Game, phase: int) {
+    let y = g.boss_y + 2;
+    let aim = sign(g.player.x - g.boss_x);
+    if (phase == 0) {
+        // Aimed spread: one shot tracks you, two peel away.
+        g.shots.push(Shot { x: g.boss_x, y: y, dx: aim });
+        g.shots.push(Shot { x: g.boss_x - 1, y: y, dx: 0 - 1 });
+        g.shots.push(Shot { x: g.boss_x + 1, y: y, dx: 1 });
+    } else if (phase == 1) {
+        // Raking fan: a five-wide curtain fanning out across the sky.
+        g.shots.push(Shot { x: g.boss_x, y: y, dx: 0 });
+        g.shots.push(Shot { x: g.boss_x - 1, y: y, dx: 0 - 1 });
+        g.shots.push(Shot { x: g.boss_x + 1, y: y, dx: 1 });
+        g.shots.push(Shot { x: g.boss_x - 1, y: y, dx: 0 });
+        g.shots.push(Shot { x: g.boss_x + 1, y: y, dx: 0 });
+    } else {
+        // Desperation strafe: the whole hull spits a volley bearing down on you.
+        g.shots.push(Shot { x: g.boss_x - 1, y: y, dx: aim });
+        g.shots.push(Shot { x: g.boss_x, y: y, dx: aim });
+        g.shots.push(Shot { x: g.boss_x + 1, y: y, dx: aim });
+    }
+}
+
+// The boss sweeps side to side and rains fire, both quickening as its hull is
+// worn down: it sweeps every other tick then every tick, and fires every 8, 6,
+// then 4 ticks across its three phases.
 fn step_boss(g: Game) {
     if (g.boss_hp <= 0) {
         return;
     }
-    if (g.t % 2 == 0) {
+    let phase = boss_phase(g);
+    let move_every = if (phase >= 2) { 1 } else { 2 };
+    if (g.t % move_every == 0) {
         g.boss_x = g.boss_x + g.boss_dir;
         if (g.boss_x <= 2) {
             g.boss_x = 2;
@@ -410,11 +460,12 @@ fn step_boss(g: Game) {
         }
     }
     g.boss_timer = g.boss_timer + 1;
-    if (g.boss_timer % BOSS_FIRE_CD == 0 && g.boss_y + 2 < g.h) {
-        let aim = sign(g.player.x - g.boss_x);
-        g.shots.push(Shot { x: g.boss_x, y: g.boss_y + 2, dx: aim });
-        g.shots.push(Shot { x: g.boss_x - 1, y: g.boss_y + 2, dx: 0 - 1 });
-        g.shots.push(Shot { x: g.boss_x + 1, y: g.boss_y + 2, dx: 1 });
+    if (g.boss_y + 2 >= g.h) {
+        return;
+    }
+    let cd = BOSS_FIRE_CD - phase * 2;
+    if (g.boss_timer % cd == 0) {
+        boss_fire(g, phase);
     }
 }
 
@@ -649,7 +700,12 @@ fn reap_enemies(g: Game) {
 }
 
 fn advance_stage(g: Game) {
-    let ns = 1 + g.killed / KILLS_PER_STAGE;
+    var ns = 1 + g.killed / KILLS_PER_STAGE;
+    // A live carrier bars the gate: its stage cannot close by kills alone —
+    // you have to down the boss (see boss_defeated) to roll forward.
+    if (g.boss_hp > 0 && ns > g.stage) {
+        ns = g.stage;
+    }
     if (ns > g.stage) {
         g.stage = ns;
         g.stage_fx = STAGE_FX_TICKS;

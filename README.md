@@ -57,9 +57,13 @@ Capcom y no se transcribe).
   coreografiada** — una línea que baja, una **cuña en V**, o una **columna que
   serpentea**.
 - **Jefes**: cada `BOSS_STAGE` fases aparece un **portaaviones** que barre por
-  arriba y **dispara ráfagas dirigidas**; aguanta mucho (barra de vida en el
-  HUD), su casco y recompensa (`BOSS_POINTS`) **crecen** con la fase, y al caer
-  suelta un power-up seguro.
+  arriba; aguanta mucho (barra de vida en el HUD), su casco y recompensa
+  (`BOSS_POINTS`) **crecen** con la fase, y al caer suelta un power-up seguro.
+  **Pelea en tres fases que escalan** según el casco que le queda — reactor
+  cian → ámbar → magenta: primero un **abanico dirigido**, luego una **cortina
+  de cinco balas** que se abre, y en su último tercio un **barrido a bocajarro**
+  cada vez más rápido. Y **cierra la fase**: mientras el jefe viva la fase **no
+  avanza** por más enemigos que derribes — hay que **derribarlo** para pasar.
 - **Impacto**: chocar con un enemigo, el jefe o comer una bala (sin estar en
   tonel ni reapareciendo) cuesta una vida y te reaparece con invencibilidad
   breve. Sin vidas, game over.
@@ -68,7 +72,7 @@ Capcom y no se transcribe).
 
 - **Lógica pura y sin reloj** (`src/shmup.ray`): avión, balas, enemigos y sus
   patrones, colisiones con subpasos, tonel, fases y puntuación. Determinista con
-  `random.seed` — los 11 tests la ejercitan sin terminal ni tiempo.
+  `random.seed` — los tests la ejercitan sin terminal ni tiempo.
 - **Dos relojes en un bucle** (`src/app.ray`): el frame (33 ms, repinta si algo
   cambió) y el tick del mundo (`TICK_MS`); el avión vuela en su **propio reloj de
   movimiento** (`MOVE_MS`), desacoplado del auto-repeat del teclado, para que
@@ -107,13 +111,13 @@ raylang.
 | Fases que escalan, vidas extra, high score persistente | ✅ |
 | Banner de fase + temas de mar (día → atardecer → noche) | ✅ |
 | Formaciones de enemigos (línea, cuña en V, columna que serpentea) | ✅ |
-| Jefes cada 3 fases (barrido + ráfagas dirigidas + barra de vida) | ✅ |
+| Jefes cada 3 fases: 3 patrones que escalan + gate de fase + barra de vida | ✅ |
 | Muerte con hit-stop + explosión; aspecto retrato/ancho conmutable | ✅ |
 | 30 fps con input sin bloqueo + diff mínimo; diagonales (kitty) | ✅ |
 | Música reactiva WSG sobre `std/audio` (8 eventos + drone) | ✅ |
 | Pausa, reinicio, `--bench`, `--seed`, `--no-music` | ✅ |
-| Tests (reglas puras + shape del frame + synth byte a byte) | ✅ 29 |
-| Sprites PNG, patrones de jefe múltiples, jefe que cierra la fase | 📋 v2 |
+| Tests (reglas puras + shape del frame + synth byte a byte) | ✅ 32 |
+| Sprites PNG (protocolo gráfico de terminal) | 📋 v2 |
 
 ## Desarrollo
 

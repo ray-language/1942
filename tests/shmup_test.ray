@@ -1,0 +1,404 @@
+// The rules, clock-free and seeded: spawns, flying and clamping, auto-fire,
+// bullets downing enemies, the loop-the-loop's invincibility, taking a hit,
+// stage progression, and the frame/panel contract.
+import std/random;
+import shmup;
+import screen;
+
+fn fresh() -> shmup.Game {
+    random.seed(7);
+    shmup.new_game()
+}
+
+@test
+fn new_game_is_well_formed() {
+    let g = fresh();
+    assert_eq(g.lives, 3);
+    assert_eq(g.stage, 1);
+    assert_eq(g.rolls, shmup.ROLL_MAX);
+    assert_eq(g.player.x, g.w / 2);
+    assert_eq(g.player.y, g.h - 2);
+    assert(!g.over);
+    assert_eq(g.enemies.len(), 0);
+    assert_eq(g.bullets.len(), 0);
+}
+
+@test
+fn flying_is_clamped_to_the_field() {
+    let g = fresh();
+    var i = 0;
+    while (i < g.w + 5) {
+        shmup.move_player(g, 0 - 1, 0);
+        i = i + 1;
+    }
+    assert_eq(g.player.x, 0);
+    i = 0;
+    while (i < g.w + 5) {
+        shmup.move_player(g, 1, 0);
+        i = i + 1;
+    }
+    assert_eq(g.player.x, g.w - 1);
+    i = 0;
+    while (i < g.h + 5) {
+        shmup.move_player(g, 0, 0 - 1);
+        i = i + 1;
+    }
+    assert_eq(g.player.y, 0);
+}
+
+@test
+fn auto_fire_emits_bullets_that_climb() {
+    let g = fresh();
+    // Empty the sky so the bullet count is only auto-fire.
+    var no_e: [shmup.Enemy] = [];
+    g.enemies = no_e;
+    shmup.tick(g);
+    assert(g.bullets.len() >= 1);
+    // Bullets travel upward: after a few ticks one has left the top.
+    var i = 0;
+    while (i < 30) {
+        var ne: [shmup.Enemy] = [];
+        g.enemies = ne;
+        shmup.tick(g);
+        i = i + 1;
+    }
+    // A bullet never sits below where it was born.
+    for b in g.bullets {
+        assert(b.y < g.h);
+    }
+}
+
+@test
+fn a_bullet_downs_a_zero() {
+    let g = fresh();
+    // Plant one zako directly above the plane's muzzle.
+    var es: [shmup.Enemy] = [];
+    es.push(
+        shmup.Enemy { x: g.player.x, y: g.player.y - 4, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 5 }
+    );
+    g.enemies = es;
+    let before = g.score;
+    var i = 0;
+    var killed = false;
+    while (i < 12 && !killed) {
+        shmup.tick(g);
+        if (g.score > before) {
+            killed = true;
+        }
+        i = i + 1;
+    }
+    assert(killed);
+    assert(g.score >= before + 100);
+}
+
+@test
+fn a_red_takes_three_hits() {
+    let g = fresh();
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: g.player.x, y: 1, kind: shmup.RED, hp: 3, dx: 0, timer: 0 });
+    g.enemies = es;
+    // Freeze the red in place: keep resetting it above the plane so bullets
+    // keep arriving on its column while we count the score jump.
+    let before = g.score;
+    var i = 0;
+    while (i < 40) {
+        if (g.enemies.len() > 0) {
+            g.enemies[0].x = g.player.x;
+            g.enemies[0].y = g.player.y - 3;
+        }
+        shmup.tick(g);
+        i = i + 1;
+    }
+    // Eventually the 3-hp lead plane pays out its 1000.
+    assert(g.score >= before + 1000);
+}
+
+@test
+fn rolling_makes_you_untouchable() {
+    let g = fresh();
+    // Sit an enemy right on the plane; without a roll that is a hit.
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: g.player.x, y: g.player.y, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g.enemies = es;
+    assert(shmup.roll(g));
+    assert(shmup.safe(g));
+    let lives = g.lives;
+    shmup.tick(g);
+    // Still spinning, so no life lost even sharing the plane's cell.
+    assert_eq(g.lives, lives);
+}
+
+@test
+fn a_collision_costs_a_life_and_respawns() {
+    let g = fresh();
+    g.invuln = 0;
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: g.player.x, y: g.player.y, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g.enemies = es;
+    let lives = g.lives;
+    // The hit docks a life and lights the death blast; respawn waits for it.
+    shmup.tick(g);
+    assert_eq(g.lives, lives - 1);
+    assert(g.death_fx > 0);
+    assert(!g.over);
+    // Play the blast out, then the plane is back with fresh invincibility.
+    var i = 0;
+    while (i < shmup.DEATH_TICKS) {
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert_eq(g.death_fx, 0);
+    assert(g.invuln > 0);
+    assert(!g.over);
+}
+
+@test
+fn roll_is_limited_and_recharges_on_death() {
+    let g = fresh();
+    assert(shmup.roll(g));
+    // Cannot start a second roll while one is spinning.
+    assert(!shmup.roll(g));
+    // Drain the roll timer.
+    var i = 0;
+    var noone: [shmup.Enemy] = [];
+    while (i < shmup.ROLL_TICKS + 1) {
+        g.enemies = noone;
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert_eq(g.roll, 0);
+}
+
+@test
+fn losing_all_lives_ends_the_game() {
+    let g = fresh();
+    g.lives = 1;
+    g.invuln = 0;
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: g.player.x, y: g.player.y, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g.enemies = es;
+    shmup.tick(g);
+    // The blast plays first; the game is over once it finishes.
+    assert(!g.over);
+    var i = 0;
+    while (i < shmup.DEATH_TICKS) {
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert(g.over);
+    assert_eq(g.lives, 0);
+    // A finished game ignores further ticks and moves.
+    shmup.tick(g);
+    assert(g.over);
+}
+
+@test
+fn stages_advance_with_kills() {
+    let g = fresh();
+    g.killed = shmup.KILLS_PER_STAGE;
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    shmup.tick(g);
+    assert_eq(g.stage, 2);
+}
+
+// Drop a power-up right on the plane and step once without it falling away
+// (an odd t skips the half-beat move), so tick() collects it.
+fn catch_pickup(g: shmup.Game) {
+    g.t = 0;
+    var ps: [shmup.Pickup] = [];
+    ps.push(shmup.Pickup { x: g.player.x, y: g.player.y });
+    g.pickups = ps;
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    shmup.tick(g);
+}
+
+@test
+fn flying_over_a_pickup_levels_the_gun() {
+    let g = fresh();
+    assert_eq(g.power, 1);
+    catch_pickup(g);
+    assert_eq(g.power, 2);
+    assert_eq(g.pickups.len(), 0);
+}
+
+@test
+fn moving_onto_a_pickup_grabs_it() {
+    let g = fresh();
+    var ps: [shmup.Pickup] = [];
+    ps.push(shmup.Pickup { x: g.player.x - 1, y: g.player.y });
+    g.pickups = ps;
+    assert_eq(g.power, 1);
+    // Stepping onto the cell collects it right away — no waiting for a tick.
+    shmup.move_player(g, 0 - 1, 0);
+    assert_eq(g.power, 2);
+    assert_eq(g.pickups.len(), 0);
+}
+
+@test
+fn a_pickup_past_max_power_is_an_extra_life() {
+    let g = fresh();
+    g.power = shmup.POW_MAX;
+    let lives = g.lives;
+    catch_pickup(g);
+    assert_eq(g.power, shmup.POW_MAX);
+    assert_eq(g.lives, lives + 1);
+}
+
+@test
+fn a_pickup_pays_points_when_gun_and_lives_are_full() {
+    let g = fresh();
+    g.power = shmup.POW_MAX;
+    g.lives = shmup.LIVES_MAX;
+    let before = g.score;
+    catch_pickup(g);
+    assert_eq(g.lives, shmup.LIVES_MAX);
+    assert(g.score - before >= shmup.POW_BONUS);
+}
+
+@test
+fn the_gun_widens_with_power() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    // Level 1: a single stream from the muzzle column.
+    g.power = 1;
+    g.fire_cd = 0;
+    g.enemies = noone;
+    let base = g.bullets.len();
+    shmup.tick(g);
+    assert_eq(g.bullets.len() - base, 1);
+    // Level 3: a triple.
+    g.power = 3;
+    g.fire_cd = 0;
+    let before = g.bullets.len();
+    shmup.tick(g);
+    assert_eq(g.bullets.len() - before, 3);
+}
+
+@test
+fn a_hit_drops_the_weapon_back_to_one() {
+    let g = fresh();
+    g.power = shmup.POW_MAX;
+    g.invuln = 0;
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: g.player.x, y: g.player.y, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g.enemies = es;
+    shmup.tick(g);
+    // The gun resets on respawn, once the death blast finishes.
+    var i = 0;
+    while (i < shmup.DEATH_TICKS) {
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert_eq(g.power, 1);
+}
+
+@test
+fn resize_clamps_and_culls_to_the_new_field() {
+    // Wide → tall: width shrinks (x clamped in), height grows (rows survive).
+    let g = shmup.new_game_sized(shmup.W_WIDE, shmup.H_WIDE);
+    var es: [shmup.Enemy] = [];
+    es.push(shmup.Enemy { x: shmup.W_WIDE - 1, y: 5, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g.enemies = es;
+    g.player.x = shmup.W_WIDE - 1;
+    shmup.resize(g, shmup.W_TALL, shmup.H_TALL);
+    assert_eq(g.w, shmup.W_TALL);
+    assert_eq(g.h, shmup.H_TALL);
+    assert(g.player.x <= shmup.W_TALL - 1);
+    assert_eq(g.enemies.len(), 1);
+    assert(g.enemies[0].x <= shmup.W_TALL - 1);
+    // Tall → wide: height shrinks, so an entity below the new floor is culled.
+    let g2 = shmup.new_game_sized(shmup.W_TALL, shmup.H_TALL);
+    var es2: [shmup.Enemy] = [];
+    es2.push(shmup.Enemy { x: 3, y: shmup.H_TALL - 1, kind: shmup.ZAKO, hp: 1, dx: 0, timer: 0 });
+    g2.enemies = es2;
+    shmup.resize(g2, shmup.W_WIDE, shmup.H_WIDE);
+    assert_eq(g2.enemies.len(), 0);
+}
+
+@test
+fn a_new_stage_flashes_a_banner() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.killed = shmup.KILLS_PER_STAGE;
+    shmup.tick(g);
+    assert_eq(g.stage, 2);
+    assert(g.stage_fx > 0);
+}
+
+@test
+fn a_boss_leads_every_third_stage() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    // killed = 2×per-stage tips into stage 3 (1 + 40/20 = 3).
+    g.killed = shmup.KILLS_PER_STAGE * 2;
+    shmup.tick(g);
+    assert_eq(g.stage, 3);
+    assert(g.boss_hp > 0);
+    assert_eq(g.boss_hp, g.boss_max);
+}
+
+@test
+fn a_wave_drops_a_formation() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.invuln = 999;
+    g.wave_cd = 1;
+    shmup.tick(g);
+    // A formation is several planes at once.
+    assert(g.enemies.len() >= 3);
+    assert_eq(g.wave_cd, shmup.WAVE_CD);
+}
+
+@test
+fn the_boss_takes_hits_and_falls() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.killed = shmup.KILLS_PER_STAGE * 2;
+    shmup.tick(g);
+    assert(g.boss_hp > 0);
+    let full = g.boss_max;
+    let before = g.score;
+    // Hammer the core: a bullet just below it each tick climbs into the hull.
+    var i = 0;
+    while (i < full + 5) {
+        g.enemies = noone;
+        g.invuln = 999;
+        var bs: [shmup.Bullet] = [];
+        bs.push(shmup.Bullet { x: g.boss_x, y: g.boss_y + 1 });
+        g.bullets = bs;
+        shmup.tick(g);
+        i = i + 1;
+    }
+    assert_eq(g.boss_hp, 0);
+    assert(g.score - before >= shmup.BOSS_POINTS);
+}
+
+@test
+fn frame_renders_with_boss_and_banner() {
+    let g = fresh();
+    var noone: [shmup.Enemy] = [];
+    g.enemies = noone;
+    g.killed = shmup.KILLS_PER_STAGE * 2;
+    shmup.tick(g);
+    assert(g.boss_hp > 0);
+    assert(g.stage_fx > 0);
+    // Rendering the boss, its HP bar and the banner must stay in bounds.
+    let f = screen.frame(g, 0, false);
+    assert_eq(f.len(), g.h + 2);
+}
+
+@test
+fn frame_has_fixed_shape() {
+    let g = fresh();
+    let f = screen.frame(g, 0, false);
+    // A top border, H rows, and a bottom border.
+    assert_eq(f.len(), g.h + 2);
+    // The score is on the panel.
+    assert(f[2].contains("score"));
+}

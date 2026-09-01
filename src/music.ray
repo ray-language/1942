@@ -1,0 +1,94 @@
+// 1942 — the reactive music pump on std/audio: a fiber synthesizes WSG
+// sub-steps and writes PCM straight to the device, keeping a small
+// wall-clock lead (LEAD_MS) so game events reach the ear promptly without
+// riding the whole device queue. Events arrive through a channel; a drain +
+// close ends the fiber without clipping the tail. No device → silent game,
+// nothing else changes. Lifted from rallyx, which proved the pacing.
+import std/audio;
+import std/time;
+import wsg;
+
+const LEAD_MS: int = 30;
+
+pub struct Music {
+    ch: Channel<int>,
+    on: bool,
+}
+
+pub fn off() -> Music {
+    let ch: Channel<int> = Channel.bounded(1);
+    Music { ch: ch, on: false }
+}
+
+pub fn start() -> Music {
+    let ch: Channel<int> = Channel.bounded(64);
+    match (audio.open(wsg.RATE, 1)) {
+        Result.Ok(h) => {
+            spawn(fn() {
+                pump(h, ch);
+            });
+            Music { ch: ch, on: true }
+        },
+        Result.Err(e) => {
+            off()
+        },
+    }
+}
+
+pub fn send_event(m: Music, ev: int) {
+    if (m.on) {
+        send(m.ch, ev);
+    }
+}
+
+pub fn stop(m: Music) {
+    if (m.on) {
+        send(m.ch, wsg.EV_STOP);
+    }
+}
+
+fn pump(h: int, ch: Channel<int>) {
+    let t = wsg.new_tracker();
+    let t0 = time.monotonic();
+    var written = 0;
+    var running = true;
+    while (running) {
+        var draining = true;
+        while (draining) {
+            match (try_recv(ch)) {
+                Received.Got(ev) => {
+                    if (ev == wsg.EV_STOP) {
+                        running = false;
+                        draining = false;
+                    } else {
+                        wsg.apply(t, ev);
+                    }
+                },
+                Received.Empty => {
+                    draining = false;
+                },
+                Received.Closed => {
+                    running = false;
+                    draining = false;
+                },
+            }
+        }
+        if (running) {
+            let ahead = written - (time.monotonic() - t0);
+            if (ahead > LEAD_MS) {
+                time.sleep(20);
+            } else {
+                match (audio.write(h, wsg.tick(t))) {
+                    Result.Ok(n) => {
+                        written = written + wsg.SUB_MS;
+                    },
+                    Result.Err(dead) => {
+                        running = false;
+                    },
+                }
+            }
+        }
+    }
+    audio.drain(h);
+    close(h);
+}

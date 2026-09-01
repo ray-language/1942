@@ -1,0 +1,445 @@
+// 1942 — a Namco-WSG-style synth, pure and clock-free, in the shape rallyx
+// proved: 32-entry 4-bit wavetable voices plus an LFSR noise voice, read
+// through phase accumulators and mixed to s16le mono. On top, a tracker: a
+// 32-step looping march (an homage — the original 1942 score is Capcom's,
+// this one is ours) with reactive states: the auto-cannon's chirp, an
+// enemy's noise-burst explosion, the crash sweep when you are hit, a rising
+// whoosh on the loop-the-loop, an ascending stage jingle, and the game-over
+// descent — over a constant engine drone. The music fiber owns the clock;
+// everything here is deterministic, so the score is testable byte by byte.
+
+pub const RATE: int = 22050;
+
+pub const STEP_MS: int = 110;
+
+pub const SAMPLES_PER_STEP: int = 2425;
+
+// A tick renders HALF a musical step: events picked up between ticks land on
+// the ear a sub-step (55 ms) sooner.
+pub const SUB_MS: int = 55;
+
+pub const TONE: int = 0;
+
+pub const BUZZ: int = 1;
+
+pub const NOISE: int = 2;
+
+// Soft flute-ish table (sine-like), values 0..15 like the arcade's PROM.
+fn tone_table() -> [int] {
+    [
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+        15,
+        15,
+        15,
+        15,
+        14,
+        13,
+        12,
+        11,
+        9,
+        8,
+        7,
+        5,
+        4,
+        3,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        7
+    ]
+}
+
+// Hollow square with a notch — the "engine" flavor.
+fn buzz_table() -> [int] {
+    [
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        13,
+        13,
+        11,
+        11,
+        9,
+        9,
+        8,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        2,
+        4,
+        4,
+        6,
+        6,
+        7,
+        7
+    ]
+}
+
+// Integer Hz for a MIDI note (C4=60 … A4=69=440). Good enough for chip music.
+pub fn freq_of(midi: int) -> int {
+    let base = [262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494];
+    let f = base[midi % 12];
+    let oct = midi / 12 - 5;
+    if (oct >= 0) { f << oct } else { f >> 0 - oct }
+}
+
+// ---- the tune: 32 sixteenth steps, a heroic march as an homage -----------
+
+fn melody() -> [int] {
+    [
+        72,
+        0,
+        72,
+        72,
+        76,
+        0,
+        79,
+        0,
+        77,
+        0,
+        76,
+        0,
+        74,
+        0,
+        72,
+        0,
+        74,
+        0,
+        76,
+        0,
+        79,
+        0,
+        84,
+        0,
+        83,
+        0,
+        79,
+        76,
+        79,
+        0,
+        72,
+        0
+    ]
+}
+
+// Marching bass: root/octave alternation with a cadence at the turn.
+fn bass() -> [int] {
+    [
+        48,
+        60,
+        48,
+        60,
+        53,
+        65,
+        53,
+        65,
+        50,
+        62,
+        50,
+        62,
+        55,
+        67,
+        55,
+        67,
+        52,
+        64,
+        52,
+        64,
+        48,
+        60,
+        48,
+        60,
+        55,
+        67,
+        55,
+        67,
+        48,
+        60,
+        48,
+        0
+    ]
+}
+
+fn arp() -> [int] {
+    [
+        0,
+        67,
+        0,
+        72,
+        0,
+        67,
+        0,
+        72,
+        0,
+        65,
+        0,
+        69,
+        0,
+        65,
+        0,
+        69,
+        0,
+        64,
+        0,
+        67,
+        0,
+        64,
+        0,
+        67,
+        0,
+        67,
+        0,
+        71,
+        0,
+        67,
+        0,
+        72
+    ]
+}
+
+// ---- reactive events -------------------------------------------------------
+
+pub const EV_STOP: int = 0;
+
+pub const EV_SHOT: int = 1;
+
+pub const EV_EXPLODE: int = 2;
+
+pub const EV_HIT: int = 3;
+
+pub const EV_ROLL: int = 4;
+
+pub const EV_OVER: int = 5;
+
+pub const EV_RESET: int = 6;
+
+pub const EV_STAGE: int = 7;
+
+pub const EV_PAUSE: int = 8;
+
+pub const EV_RESUME: int = 9;
+
+pub const EV_POWER: int = 10;
+
+pub struct Tracker {
+    step: int,
+    sub: int,
+    shot: int,
+    explode: int,
+    roll: int,
+    hit: int,
+    over: bool,
+    over_steps: int,
+    stage: int,
+    power: int,
+    paused: bool,
+    phases: [int],
+    lfsr: int,
+}
+
+pub fn new_tracker() -> Tracker {
+    Tracker {
+        step: 0,
+        sub: 0,
+        shot: 0,
+        explode: 0,
+        roll: 0,
+        hit: 0,
+        over: false,
+        over_steps: 0,
+        stage: 0,
+        power: 0,
+        paused: false,
+        phases: [0, 0, 0, 0],
+        lfsr: 0x4A1F
+    }
+}
+
+pub fn apply(t: Tracker, ev: int) {
+    if (ev == EV_SHOT) {
+        // Keep it short so a stream of shots rattles instead of droning.
+        if (t.shot < 1) {
+            t.shot = 1;
+        }
+    } else if (ev == EV_EXPLODE) {
+        t.explode = 2;
+    } else if (ev == EV_ROLL) {
+        t.roll = 4;
+    } else if (ev == EV_STAGE) {
+        t.stage = 4;
+    } else if (ev == EV_POWER) {
+        t.power = 4;
+    } else if (ev == EV_PAUSE) {
+        t.paused = true;
+    } else if (ev == EV_RESUME) {
+        t.paused = false;
+    } else if (ev == EV_HIT) {
+        t.hit = 6;
+        t.shot = 0;
+        t.explode = 0;
+        t.roll = 0;
+    } else if (ev == EV_OVER) {
+        t.over = true;
+        t.over_steps = 12;
+        t.hit = 0;
+        t.shot = 0;
+        t.explode = 0;
+        t.roll = 0;
+        t.stage = 0;
+    } else if (ev == EV_RESET) {
+        t.over = false;
+        t.over_steps = 0;
+        t.hit = 0;
+        t.shot = 0;
+        t.explode = 0;
+        t.roll = 0;
+        t.stage = 0;
+        t.power = 0;
+        t.paused = false;
+        t.step = 0;
+        t.sub = 0;
+    }
+}
+
+// The four (wave, midi, vol) voices for the current step, by priority:
+// game-over descent > (hit sweep on the lead voices) + the SFX voice, where
+// explosion > roll whoosh > stage jingle > shot chirp > arpeggio; voice 3 is
+// the engine drone, hushed only when the plane is off the board (hit, over).
+fn current_voices(t: Tracker) -> [(int, int, int)] {
+    if (t.over) {
+        if (t.over_steps <= 0) {
+            return [(TONE, 0, 0), (TONE, 0, 0), (TONE, 0, 0), (TONE, 0, 0)];
+        }
+        let n = 72 - (12 - t.over_steps);
+        return [(TONE, n, 12), (BUZZ, n - 24, 9), (TONE, 0, 0), (TONE, 0, 0)];
+    }
+    if (t.paused) {
+        // Held: the whole band rests until play resumes.
+        return [(TONE, 0, 0), (TONE, 0, 0), (TONE, 0, 0), (TONE, 0, 0)];
+    }
+    var v0 = (TONE, melody()[t.step % 32], 10);
+    var v1 = (BUZZ, bass()[t.step % 32], 8);
+    if (t.hit > 0) {
+        // The crash: a falling buzz sweep across the lead voices.
+        let n = 67 - (6 - t.hit) * 4;
+        v0 = (BUZZ, n, 13);
+        v1 = (BUZZ, n - 12, 10);
+    }
+    var v2 = (TONE, arp()[t.step % 32], 4);
+    if (t.explode > 0) {
+        let fade = [13, 8];
+        v2 = (NOISE, 50, fade[2 - t.explode]);
+    } else if (t.roll > 0) {
+        // A rising tone as the plane loops over.
+        v2 = (TONE, 72 + (4 - t.roll) * 4, 10);
+    } else if (t.stage > 0) {
+        let ladder = [79, 84, 88, 91];
+        v2 = (TONE, ladder[4 - t.stage], 13);
+    } else if (t.power > 0) {
+        // A quick bright arpeggio climbing as you pocket the power-up.
+        let ladder = [81, 88, 93, 100];
+        v2 = (TONE, ladder[4 - t.power], 12);
+    } else if (t.shot > 0) {
+        v2 = (TONE, 96, 6);
+    }
+    // Engine drone under it all; silent while the plane is gone (hit/over).
+    var v3 = (BUZZ, if (t.step % 2 == 0) { 36 } else { 37 }, 4);
+    if (t.hit > 0) {
+        v3 = (TONE, 0, 0);
+    }
+    return [v0, v1, v2, v3];
+}
+
+// Render one SUB-step (55 ms) of audio and advance the tracker; the musical
+// position moves every second tick. s16le mono bytes.
+pub fn tick(t: Tracker) -> bytes {
+    let voices = current_voices(t);
+    let tables = [tone_table(), buzz_table()];
+    var incs: [int] = [];
+    var vols: [int] = [];
+    var waves: [int] = [];
+    for (wave, midi, vol) in voices.iter() {
+        let f = if (midi > 0) { freq_of(midi) } else { 0 };
+        incs.push(f * 2097152 / RATE);
+        vols.push(if (midi > 0) { vol } else { 0 });
+        waves.push(wave);
+    }
+    let n = if (t.sub == 0) { 1213 } else { SAMPLES_PER_STEP - 1213 };
+    var out: [int] = [];
+    var i = 0;
+    while (i < n) {
+        var acc = 0;
+        var v = 0;
+        while (v < 4) {
+            if (vols[v] > 0) {
+                if (waves[v] == NOISE) {
+                    if ((i & 1) == 0) {
+                        let bit = (t.lfsr ^ t.lfsr >> 1) & 1;
+                        t.lfsr = t.lfsr >> 1 | bit << 14;
+                    }
+                    acc = acc + ((t.lfsr & 1) * 14 - 7) * vols[v];
+                } else {
+                    let idx = t.phases[v] >> 16 & 31;
+                    acc = acc + (tables[waves[v]][idx] - 8) * vols[v];
+                    t.phases[v] = t.phases[v] + incs[v];
+                }
+            }
+            v = v + 1;
+        }
+        let sample = acc * 72;
+        out.push(sample & 0xFF);
+        out.push(sample >> 8 & 0xFF);
+        i = i + 1;
+    }
+    t.sub = 1 - t.sub;
+    if (t.sub == 0) {
+        t.step = (t.step + 1) % 32;
+        if (t.shot > 0) {
+            t.shot = t.shot - 1;
+        }
+        if (t.explode > 0) {
+            t.explode = t.explode - 1;
+        }
+        if (t.roll > 0) {
+            t.roll = t.roll - 1;
+        }
+        if (t.hit > 0) {
+            t.hit = t.hit - 1;
+        }
+        if (t.stage > 0) {
+            t.stage = t.stage - 1;
+        }
+        if (t.power > 0) {
+            t.power = t.power - 1;
+        }
+        if (t.over_steps > 0) {
+            t.over_steps = t.over_steps - 1;
+        }
+    }
+    bytes_of(out)
+}

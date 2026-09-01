@@ -1,0 +1,26 @@
+// 1942 — the iconic vertical shoot 'em up in the terminal at 30 fps.
+import std/random;
+import app;
+
+fn main() -> int {
+    let av = args();
+    var with_music = true;
+    for a in av {
+        if (a == "--bench") {
+            return app.bench();
+        }
+        if (a == "--seed") {
+            random.seed(42);
+        }
+        if (a == "--no-music") {
+            with_music = false;
+        }
+        if (a == "--help" || a == "-h") {
+            eprint("usage: 1942 [--bench] [--seed] [--no-music]");
+            eprint("  ← → ↑ ↓ volar · espacio tonel (roll) · p pausa · r reinicia · q salir");
+            eprint("  --no-music: sin sonido (o si no hay dispositivo de audio, calla solo)");
+            return 0;
+        }
+    }
+    app.play(with_music)
+}

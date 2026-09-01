@@ -1,0 +1,414 @@
+// 1942 — the frame builder + line-diff painter. A glyph grid is stamped
+// (scrolling ocean with parallax islands, then enemies, bullets, enemy fire,
+// and the fighter on top), rendered to fixed lines, and only the changed
+// lines are repainted with absolute cursor moves — raygame's discipline, a
+// shmup's cast. Planes are directional filled triangles so friend/foe and
+// heading read at a glance.
+import shmup;
+
+pub fn esc() -> string {
+    "\u{1B}"
+}
+
+// The playfield paints its OWN dark canvas (256-color, so it reads the same on
+// a light or a dark terminal) instead of inheriting the terminal background.
+// The palette rotates per stage (see theme_of) so each stage looks like a
+// different sea; the sea tones stay low-contrast so the bright sprites own the
+// eye.
+struct Theme {
+    bg: int,
+    island: int,
+    wave: int,
+    foam: int,
+}
+
+// One theme per stage, cycling: a deep-blue Pacific day, a maroon sunset, and a
+// near-black night. All are very dark, so even a same-hue sprite pops by sheer
+// brightness.
+fn theme_of(stage: int) -> Theme {
+    let i = (stage - 1) % 3;
+    if (i == 0) {
+        Theme { bg: 17, island: 65, wave: 68, foam: 60 }
+    } else if (i == 1) {
+        Theme { bg: 52, island: 137, wave: 95, foam: 131 }
+    } else {
+        Theme { bg: 233, island: 240, wave: 24, foam: 237 }
+    }
+}
+
+// A fixed dark chip background for the legend swatches, so they mirror the
+// game sprites regardless of the current stage theme.
+const CHIP_BG: int = 235;
+
+// Basic-ANSI text for the side panel, which sits on the terminal's own
+// background (no forced canvas there).
+fn paint(code: int, s: string) -> string {
+    esc() + "[" + to_string(code) + "m" + s + esc() + "[0m"
+}
+
+fn bold(code: int, s: string) -> string {
+    esc() + "[1;" + to_string(code) + "m" + s + esc() + "[0m"
+}
+
+// Bold, default foreground: readable on any terminal theme (bright on dark,
+// dark on light), for panel values that must not vanish on a light terminal.
+fn strong(s: string) -> string {
+    esc() + "[1m" + s + esc() + "[0m"
+}
+
+// A playfield cell: 256-color foreground `code` on the current stage's canvas
+// `bg`. canvas() draws just the background (empty water / the invuln blink).
+fn cell(bg: int, code: int, s: string) -> string {
+    esc() + "[38;5;" + to_string(code) + ";48;5;" + to_string(bg) + "m" + s + esc() + "[0m"
+}
+
+fn cellb(bg: int, code: int, s: string) -> string {
+    esc() + "[1;38;5;" + to_string(code) + ";48;5;" + to_string(bg) + "m" + s + esc() + "[0m"
+}
+
+fn canvas(bg: int, s: string) -> string {
+    esc() + "[48;5;" + to_string(bg) + "m" + s + esc() + "[0m"
+}
+
+// Green islands drift DOWN the screen (the plane is racing north, so the world
+// slides south past it) on a much slower clock than the foam — far below the
+// fighter, they crawl by for depth. A coarse 4×3 grid: every so often a whole
+// cell is land, mottled for texture.
+fn island(x: int, y: int, t: int) -> bool {
+    let iy = y - t / 6;
+    let gx = x / 4;
+    let gy = iy / 3;
+    ((gx * 13 + gy * 7) % 19 + 19) % 19 == 0
+}
+
+// The ocean for the current theme: muted islands first, then fast wave crests
+// and a dimmer foam speckle, so the fighter reads as racing north even at a
+// hover — but the whole sea stays low-contrast under the sprites.
+fn sea(th: Theme, x: int, y: int, t: int) -> string {
+    if (island(x, y, t)) {
+        return cell(th.bg, th.island, if ((x + y) % 2 == 0) { "▓▓" } else { "▒▒" });
+    }
+    // Two coprime speckle layers, thin glyphs: enough motion to read as sea,
+    // scattered enough not to draw diagonal rain lines.
+    let scroll = y - t / 2;
+    let a = ((x * 11 + scroll * 7) % 53 + 53) % 53;
+    let b = ((x * 5 + scroll * 17) % 37 + 37) % 37;
+    if (a == 0) {
+        cell(th.bg, th.wave, "~ ")
+    } else if (b == 0) {
+        cell(th.bg, th.foam, "· ")
+    } else {
+        canvas(th.bg, "  ")
+    }
+}
+
+fn plane_glyph(bg: int, g: shmup.Game) -> string {
+    if (g.roll > 0) {
+        // The loop-the-loop: cycle four attitudes so the plane visibly tumbles.
+        let frames = ["◥◤", "▲▲", "◢◣", "▼▼"];
+        cellb(bg, 227, frames[(shmup.ROLL_TICKS - g.roll) / 2 % 4])
+    } else if (g.invuln > 0 && g.t % 2 == 0) {
+        canvas(bg, "  ")
+    } else {
+        cellb(bg, 83, "▲▲")
+    }
+}
+
+fn enemy_glyph(bg: int, e: shmup.Enemy) -> string {
+    if (e.kind == shmup.RED) {
+        cellb(bg, 203, "◣◢")
+    } else if (e.kind == shmup.WEAVER) {
+        cellb(bg, 87, "▼▼")
+    } else {
+        cell(bg, 251, "▼▼")
+    }
+}
+
+fn iabs(n: int) -> int {
+    if (n < 0) { 0 - n } else { n }
+}
+
+// One cell of a fireball, coloured by its ring: a white-hot core out through
+// yellow and orange to a red, ragged rim.
+fn burst_cell(bg: int, dist: int) -> string {
+    if (dist == 0) {
+        cellb(bg, 231, "██")
+    } else if (dist == 1) {
+        cellb(bg, 226, "██")
+    } else if (dist == 2) {
+        cellb(bg, 214, "▓▓")
+    } else {
+        cellb(bg, 202, "▒▒")
+    }
+}
+
+// Stamp an expanding blast of radius r into the glyph grid, centred on (cx, cy).
+fn stamp_blast(glyph: [string], g: shmup.Game, bg: int, cx: int, cy: int, r: int) {
+    var dy = 0 - r;
+    while (dy <= r) {
+        var dx = 0 - r;
+        while (dx <= r) {
+            let x = cx + dx;
+            let y = cy + dy;
+            let dist = if (iabs(dx) > iabs(dy)) { iabs(dx) } else { iabs(dy) };
+            if (dist <= r && x >= 0 && x < g.w && y >= 0 && y < g.h) {
+                glyph[y * g.w + x] = burst_cell(bg, dist);
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+}
+
+// The boss carrier: a 3-wide, 2-tall hull with a glowing reactor core.
+fn stamp_boss(glyph: [string], g: shmup.Game, bg: int) {
+    var dy = 0;
+    while (dy <= 1) {
+        var dx = 0 - 1;
+        while (dx <= 1) {
+            let x = g.boss_x + dx;
+            let y = g.boss_y + dy;
+            if (x >= 0 && x < g.w && y >= 0 && y < g.h) {
+                var c = cellb(bg, 160, "██");
+                if (dy == 0 && dx == 0) {
+                    c = cellb(bg, 51, "◉◉");
+                } else if (dy == 1) {
+                    c = cellb(bg, 208, "██");
+                }
+                glyph[y * g.w + x] = c;
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+}
+
+// The boss HP bar for the side panel (basic ANSI, on the terminal background).
+fn boss_bar(g: shmup.Game) -> string {
+    let segs = 10;
+    var filled = g.boss_hp * segs / g.boss_max;
+    if (filled < 1 && g.boss_hp > 0) {
+        filled = 1;
+    }
+    var s = "";
+    var i = 0;
+    while (i < segs) {
+        if (i < filled) {
+            s = s + bold(91, "█");
+        } else {
+            s = s + paint(90, "░");
+        }
+        i = i + 1;
+    }
+    s
+}
+
+// The "STAGE n" flash: a full-width reverse-video banner across one row.
+fn banner_row(g: shmup.Game) -> string {
+    let label = "◈ STAGE " + to_string(g.stage) + " ◈";
+    let cols = g.w * 2;
+    let n = label.len();
+    var lp = (cols - n) / 2;
+    if (lp < 0) {
+        lp = 0;
+    }
+    var rp = cols - n - lp;
+    if (rp < 0) {
+        rp = 0;
+    }
+    esc() + "[1;7;93m" + " ".repeat(lp) + label + " ".repeat(rp) + esc() + "[0m"
+}
+
+pub fn frame(g: shmup.Game, hiscore: int, paused: bool) -> [string] {
+    let th = theme_of(g.stage);
+    let bg = th.bg;
+    var glyph: [string] = [];
+    var i = 0;
+    while (i < g.w * g.h) {
+        glyph.push("");
+        i = i + 1;
+    }
+    // Power-ups on the water, then the boss, enemies, enemy fire, player
+    // bullets, and the fighter on top (so it visibly scoops a pickup as it
+    // flies over).
+    i = 0;
+    while (i < g.pickups.len()) {
+        let p = g.pickups[i];
+        if (p.y >= 0 && p.y < g.h && p.x >= 0 && p.x < g.w) {
+            glyph[p.y * g.w + p.x] = cellb(bg, 213, "◇◇");
+        }
+        i = i + 1;
+    }
+    if (g.boss_hp > 0) {
+        stamp_boss(glyph, g, bg);
+    }
+    i = 0;
+    while (i < g.enemies.len()) {
+        let e = g.enemies[i];
+        if (e.y >= 0 && e.y < g.h && e.x >= 0 && e.x < g.w) {
+            glyph[e.y * g.w + e.x] = enemy_glyph(bg, e);
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < g.shots.len()) {
+        let s = g.shots[i];
+        if (s.y >= 0 && s.y < g.h && s.x >= 0 && s.x < g.w) {
+            glyph[s.y * g.w + s.x] = cellb(bg, 209, "◆◆");
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < g.bullets.len()) {
+        let b = g.bullets[i];
+        if (b.y >= 0 && b.y < g.h && b.x >= 0 && b.x < g.w) {
+            glyph[b.y * g.w + b.x] = cellb(bg, 227, "││");
+        }
+        i = i + 1;
+    }
+    if (g.death_fx > 0) {
+        var r = shmup.DEATH_TICKS - g.death_fx;
+        if (r > 3) {
+            r = 3;
+        }
+        stamp_blast(glyph, g, bg, g.death_x, g.death_y, r);
+    } else if (!g.over) {
+        glyph[g.player.y * g.w + g.player.x] = plane_glyph(bg, g);
+    }
+    // The boss's own death blast, larger, over where it fell.
+    if (g.boss_fx > 0) {
+        var br = shmup.BOSS_FX_TICKS - g.boss_fx + 1;
+        if (br > 4) {
+            br = 4;
+        }
+        stamp_blast(glyph, g, bg, g.boss_x, g.boss_y, br);
+    }
+    // Render rows + side panel.
+    let banner_y = g.h / 2;
+    var out: [string] = [];
+    out.push("  ┌" + dashes(g.w) + "┐   " + bold(93, "✈ 1942"));
+    var y = 0;
+    while (y < g.h) {
+        var row = "  │";
+        if (g.stage_fx > 0 && y == banner_y) {
+            row = row + banner_row(g);
+        } else {
+            var x = 0;
+            while (x < g.w) {
+                let c = glyph[y * g.w + x];
+                row = row + if (c == "") { sea(th, x, y, g.t) } else { c };
+                x = x + 1;
+            }
+        }
+        row = row + "│";
+        row = row + panel(g, hiscore, paused, y);
+        out.push(row);
+        y = y + 1;
+    }
+    out.push("  └" + dashes(g.w) + "┘");
+    out
+}
+
+fn dashes(n: int) -> string {
+    var s = "";
+    var i = 0;
+    while (i < n) {
+        s = s + "──";
+        i = i + 1;
+    }
+    s
+}
+
+fn lives_str(g: shmup.Game) -> string {
+    var s = "";
+    var i = 0;
+    while (i < g.lives) {
+        s = s + "▲ ";
+        i = i + 1;
+    }
+    if (s == "") {
+        s = "—";
+    }
+    bold(92, s)
+}
+
+fn rolls_str(g: shmup.Game) -> string {
+    var s = "";
+    var i = 0;
+    while (i < g.rolls) {
+        s = s + "◍ ";
+        i = i + 1;
+    }
+    if (s == "") {
+        s = "—";
+    }
+    bold(93, s)
+}
+
+// Weapon level as POW_MAX pips: lit up to the current power, dim beyond.
+fn weapon_str(g: shmup.Game) -> string {
+    var s = "";
+    var i = 0;
+    while (i < shmup.POW_MAX) {
+        if (i < g.power) {
+            s = s + bold(95, "◈ ");
+        } else {
+            s = s + paint(90, "◇ ");
+        }
+        i = i + 1;
+    }
+    s
+}
+
+fn panel(g: shmup.Game, hiscore: int, paused: bool, y: int) -> string {
+    if (y == 1) {
+        "   score  " + strong(to_string(g.score))
+    } else if (y == 2) {
+        "   hi     " + paint(33, to_string(hiscore))
+    } else if (y == 3) {
+        "   stage  " + bold(96, to_string(g.stage))
+    } else if (y == 5) {
+        "   planes " + lives_str(g)
+    } else if (y == 6) {
+        "   rolls  " + rolls_str(g)
+    } else if (y == 7) {
+        "   arma   " + weapon_str(g)
+    } else if (y == 8 && g.boss_hp > 0) {
+        "   jefe   " + boss_bar(g)
+    } else if (y == 9) {
+        "   ← → ↑ ↓  volar"
+    } else if (y == 10) {
+        "   espacio  tonel (roll)"
+    } else if (y == 11) {
+        "   p pausa · r reinicia"
+    } else if (y == 12) {
+        "   q salir · a aspecto"
+    } else if (y == 15) {
+        "   " + cellb(CHIP_BG, 203, "◣◢") + " líder    +1000"
+    } else if (y == 16) {
+        "   " + cellb(CHIP_BG, 87, "▼▼") + " weaver   +200"
+    } else if (y == 17) {
+        "   " + cell(CHIP_BG, 251, "▼▼") + " zero     +100"
+    } else if (y == 18) {
+        "   " + cellb(CHIP_BG, 213, "◇◇") + " arma     mejora"
+    } else if (y == 19 && g.over) {
+        "   " + esc() + "[1;7;91m GAME OVER — r reinicia " + esc() + "[0m"
+    } else if (y == 19 && paused) {
+        "   " + esc() + "[1;7;96m ‖ PAUSA — p seguir " + esc() + "[0m"
+    } else {
+        ""
+    }
+}
+
+pub fn paint_diff(prev: [string], next: [string]) -> string {
+    var out = "";
+    var i = 0;
+    while (i < next.len()) {
+        let same = i < prev.len() && prev[i] == next[i];
+        if (!same) {
+            out = out + esc() + "[" + to_string(i + 1) + ";1H" + esc() + "[2K" + next[i];
+        }
+        i = i + 1;
+    }
+    out
+}

@@ -1,0 +1,581 @@
+// 1942 — the 30 fps loop with two clocks: the frame (repaint on change) and
+// the world tick (bullets, enemies, spawns). The plane flies on its own
+// movement clock, decoupled from the OS key-repeat stream so changing
+// direction is smooth (no typematic-delay stall); io.read_timeout until the
+// next frame is the single wait. raygame's hard-latency pattern, aimed
+// skyward — with rallyx's reactive WSG music layered on top through a channel.
+//
+// Steering, tuned so a tap is exactly one cell and a hold flows smoothly. On
+// terminals that speak the kitty keyboard protocol we get real press/release
+// events: the plane moves one cell the instant a key goes down and then, only
+// while it stays down, auto-repeats — first after REPEAT_DELAY_MS, then every
+// REPEAT_RATE_MS — and stops the moment you let go (two perpendicular holds
+// combine into a diagonal). Elsewhere there are no release events, so we simply
+// move one cell per key event and let the OS auto-repeat drive a held key.
+import std/io;
+import std/fs;
+import std/time;
+import std/term;
+from std/term import Key;
+import shmup;
+import screen;
+import music;
+import wsg;
+
+const FRAME_MS: int = 33;
+
+// Kitty steering (real press/release): one cell on key-down, then auto-repeat
+// only while held — the first repeat after REPEAT_DELAY_MS (long enough that a
+// normal tap stays a single cell), and every REPEAT_RATE_MS after that.
+const REPEAT_DELAY_MS: int = 220;
+
+const REPEAT_RATE_MS: int = 60;
+
+// Safety net for a missed release (e.g. focus loss): drop the heading if no key
+// event refreshes it in this long. The terminal's repeat events keep it alive
+// while a key is genuinely down.
+const KITTY_HOLD_MS: int = 2000;
+
+fn write_now(s: string) {
+    io.write(s);
+    io.flush();
+}
+
+fn hiscore_path() -> string {
+    match (env("HOME")) {
+        Option.Some(h) => h + "/.1942_hiscore",
+        Option.None => "/tmp/.1942_hiscore",
+    }
+}
+
+fn load_hiscore() -> int {
+    match (fs.read_file(hiscore_path())) {
+        Result.Ok(s) => {
+            match (parse_int(s.trim())) {
+                Option.Some(n) => n,
+                Option.None => 0,
+            }
+        },
+        Result.Err(e) => 0,
+    }
+}
+
+fn save_hiscore(n: int) {
+    fs.write_file(hiscore_path(), to_string(n));
+}
+
+struct App {
+    g: shmup.Game,
+    prev: [string],
+    pending: bytes,
+    hiscore: int,
+    paused: bool,
+    quit: bool,
+    music: music.Music,
+    prev_score: int,
+    prev_lives: int,
+    prev_stage: int,
+    prev_over: bool,
+    // Steering state. kitty = the terminal reports key press/release; hold_dx/
+    // hold_dy = the current heading (0,0 = idle); move_deadline = drop the
+    // heading once monotonic() passes it; next_move = when the next cell step
+    // is due.
+    kitty: bool,
+    hold_dx: int,
+    hold_dy: int,
+    move_deadline: int,
+    next_move: int,
+    // With the kitty protocol we know each arrow's real up/down state, so we can
+    // combine two perpendicular holds into a diagonal heading. (Legacy terminals
+    // only auto-repeat the last key, so there the heading is single-axis.)
+    held_l: bool,
+    held_r: bool,
+    held_u: bool,
+    held_d: bool,
+}
+
+fn note_score(a: App) {
+    if (a.g.score > a.hiscore) {
+        a.hiscore = a.g.score;
+        save_hiscore(a.hiscore);
+    }
+}
+
+// Translate game-state deltas into music events: a chirp on each auto-fire,
+// an explosion when the score jumps (a kill), the crash sweep on a lost
+// life, the stage jingle on a new stage, and the farewell on game over.
+fn sync_music(a: App) {
+    if (a.g.fired && !a.g.over) {
+        music.send_event(a.music, wsg.EV_SHOT);
+    }
+    if (a.g.powered) {
+        if (!a.g.over) {
+            music.send_event(a.music, wsg.EV_POWER);
+        }
+        a.g.powered = false;
+    }
+    if (a.g.lives < a.prev_lives && !a.g.over) {
+        music.send_event(a.music, wsg.EV_HIT);
+    } else if (a.g.score > a.prev_score && !a.g.over) {
+        music.send_event(a.music, wsg.EV_EXPLODE);
+    }
+    if (a.g.stage > a.prev_stage && !a.g.over) {
+        music.send_event(a.music, wsg.EV_STAGE);
+    }
+    if (a.g.over && !a.prev_over) {
+        music.send_event(a.music, wsg.EV_OVER);
+    }
+    a.prev_score = a.g.score;
+    a.prev_lives = a.g.lives;
+    a.prev_stage = a.g.stage;
+    a.prev_over = a.g.over;
+}
+
+fn repaint(a: App) {
+    let next = screen.frame(a.g, a.hiscore, a.paused);
+    let ops = screen.paint_diff(a.prev, next);
+    if (ops != "") {
+        write_now(ops);
+    }
+    a.prev = next;
+}
+
+// Does the terminal have the rows for the tall portrait board (box = H + 2
+// lines)? A short window falls back to the wider, squatter layout.
+fn tall_fits() -> bool {
+    match (term.size()) {
+        Option.Some(sz) => sz.1 >= shmup.H_TALL + 2,
+        Option.None => true,
+    }
+}
+
+// Pick the starting layout: the classic portrait where it fits, else wide.
+fn start_dims() -> (int, int) {
+    if (tall_fits()) {
+        (shmup.W_TALL, shmup.H_TALL)
+    } else {
+        (shmup.W_WIDE, shmup.H_WIDE)
+    }
+}
+
+// Toggle the board between the tall portrait and the wide layout, keeping the
+// run. The frame changes size, so wipe the screen and force a full repaint.
+// Switching to portrait is refused if the terminal is too short for it.
+fn toggle_aspect(a: App) {
+    if (a.g.w == shmup.W_TALL) {
+        shmup.resize(a.g, shmup.W_WIDE, shmup.H_WIDE);
+    } else if (tall_fits()) {
+        shmup.resize(a.g, shmup.W_TALL, shmup.H_TALL);
+    }
+    let e = screen.esc();
+    write_now(e + "[2J" + e + "[H");
+    var empty: [string] = [];
+    a.prev = empty;
+    repaint(a);
+}
+
+fn on_key(a: App, k: Key) {
+    match (k) {
+        Key.Char(c) => {
+            if (c == 'q') {
+                a.quit = true;
+            } else if (c == 'p') {
+                a.paused = !a.paused;
+                a.hold_dx = 0;
+                a.hold_dy = 0;
+                a.held_l = false;
+                a.held_r = false;
+                a.held_u = false;
+                a.held_d = false;
+                music.send_event(a.music, if (a.paused) { wsg.EV_PAUSE } else { wsg.EV_RESUME });
+            } else if (c == 'r') {
+                if (a.g.over) {
+                    a.g = shmup.new_game_sized(a.g.w, a.g.h);
+                    a.paused = false;
+                    a.prev_score = 0;
+                    a.prev_lives = a.g.lives;
+                    a.prev_stage = a.g.stage;
+                    a.prev_over = false;
+                    music.send_event(a.music, wsg.EV_RESET);
+                }
+            } else if (c == 'a') {
+                toggle_aspect(a);
+            } else if (c == ' ') {
+                if (!a.paused && shmup.roll(a.g)) {
+                    music.send_event(a.music, wsg.EV_ROLL);
+                }
+            }
+        },
+        Key.Ctrl(c) => {
+            if (c == 'c') {
+                a.quit = true;
+            }
+        },
+        _ => { },
+    }
+}
+
+// (kitty) Adopt a freshly computed heading. On a change to a new non-idle
+// direction, step one cell at once and arm the auto-repeat after the initial
+// delay — so a tap is a single cell, and a hold flows only once the delay
+// passes.
+fn set_heading(a: App, dx: int, dy: int, now: int) {
+    if (dx != a.hold_dx || dy != a.hold_dy) {
+        a.hold_dx = dx;
+        a.hold_dy = dy;
+        if (dx != 0 || dy != 0) {
+            shmup.move_player(a.g, dx, dy);
+            a.next_move = now + REPEAT_DELAY_MS;
+        }
+    }
+}
+
+// A held arrow drives the plane. event: 1 press, 2 repeat, 3 release (kitty
+// only). Under the kitty protocol each arrow's real up/down state is tracked,
+// so two perpendicular holds combine into a diagonal and a release recomputes
+// the heading (stopping the plane when the last arrow lifts). Legacy terminals
+// have no release events, so we move exactly one cell per key event and let the
+// OS auto-repeat carry a held key.
+fn steer(a: App, dx: int, dy: int, event: int, now: int) {
+    if (a.paused || a.g.over || a.g.death_fx > 0) {
+        return;
+    }
+    if (a.kitty) {
+        let down = event != 3;
+        if (dx < 0) {
+            a.held_l = down;
+        } else if (dx > 0) {
+            a.held_r = down;
+        } else if (dy < 0) {
+            a.held_u = down;
+        } else if (dy > 0) {
+            a.held_d = down;
+        }
+        let hx = if (a.held_r) { 1 } else { 0 } - if (a.held_l) { 1 } else { 0 };
+        let hy = if (a.held_d) { 1 } else { 0 } - if (a.held_u) { 1 } else { 0 };
+        set_heading(a, hx, hy, now);
+        a.move_deadline = now + KITTY_HOLD_MS;
+    } else {
+        shmup.move_player(a.g, dx, dy);
+    }
+}
+
+// Step the plane along its heading on the movement clock, catching up if the
+// loop fell behind, and drop the heading once it goes stale.
+fn advance_movement(a: App, now: int) {
+    // While dead, wipe the steering state so a key released during the blast
+    // can't leave the respawned plane drifting.
+    if (a.g.death_fx > 0) {
+        a.hold_dx = 0;
+        a.hold_dy = 0;
+        a.held_l = false;
+        a.held_r = false;
+        a.held_u = false;
+        a.held_d = false;
+        return;
+    }
+    if (a.paused || a.g.over || a.hold_dx == 0 && a.hold_dy == 0) {
+        return;
+    }
+    if (now >= a.move_deadline) {
+        a.hold_dx = 0;
+        a.hold_dy = 0;
+        a.held_l = false;
+        a.held_r = false;
+        a.held_u = false;
+        a.held_d = false;
+        return;
+    }
+    var steps = 0;
+    while (now >= a.next_move && steps < 8) {
+        shmup.move_player(a.g, a.hold_dx, a.hold_dy);
+        a.next_move = a.next_move + REPEAT_RATE_MS;
+        steps = steps + 1;
+    }
+    if (a.next_move < now) {
+        a.next_move = now + REPEAT_RATE_MS;
+    }
+}
+
+// Route a decoded key to steering (arrows) or the action handler (everything
+// else, on press/repeat only — a release of a non-arrow key is nothing to do).
+fn dispatch_key(a: App, k: Key, event: int, now: int) {
+    match (k) {
+        Key.Left => steer(a, 0 - 1, 0, event, now),
+        Key.Right => steer(a, 1, 0, event, now),
+        Key.Up => steer(a, 0, 0 - 1, event, now),
+        Key.Down => steer(a, 0, 1, event, now),
+        _ => {
+            if (event != 3) {
+                on_key(a, k);
+            }
+        },
+    }
+}
+
+// The kitty keyboard protocol tags each key event with a type in a ':' sub-
+// parameter (1 press, 2 repeat, 3 release). Read it off the raw sequence the
+// decoder consumed; a sequence without one (legacy or plain key) is a press.
+fn kitty_event(seq: bytes) -> int {
+    match (from_utf8(seq)) {
+        Result.Ok(s) => {
+            let n = s.len();
+            var i = 0;
+            var last_colon = 0 - 1;
+            while (i < n) {
+                if (s[i] == ':') {
+                    last_colon = i;
+                }
+                i = i + 1;
+            }
+            if (last_colon < 0) {
+                return 1;
+            }
+            var j = last_colon + 1;
+            var val = 0;
+            var any = false;
+            var scanning = true;
+            while (j < n && scanning) {
+                let code = char_code(s[j]);
+                if (code >= 48 && code <= 57) {
+                    val = val * 10 + (code - 48);
+                    any = true;
+                    j = j + 1;
+                } else {
+                    scanning = false;
+                }
+            }
+            if (any) { val } else { 1 }
+        },
+        Result.Err(e) => 1,
+    }
+}
+
+fn drain_keys(a: App) {
+    let now = time.monotonic();
+    var more = true;
+    while (more && a.pending.len() > 0 && !a.quit) {
+        match (term.decode(a.pending)) {
+            Option.Some(decoded) => {
+                let event = if (a.kitty) {
+                    kitty_event(a.pending.sub_bytes(0, decoded.1))
+                } else {
+                    1
+                };
+                a.pending = a.pending.sub_bytes(decoded.1, a.pending.len());
+                dispatch_key(a, decoded.0, event, now);
+            },
+            Option.None => {
+                more = false;
+                if (a.pending == b"\x1b") {
+                    a.pending = b"";
+                } else if (a.pending.len() > 8) {
+                    // A stray terminal reply must never wedge the key stream:
+                    // drop a byte and resync.
+                    a.pending = a.pending.sub_bytes(1, a.pending.len());
+                    more = true;
+                }
+            },
+        }
+    }
+}
+
+// A kitty flags reply is CSI ? <digits> u; a Primary DA reply is CSI ? ... c.
+// Both open with ESC [ ? — tell them apart by the terminator.
+fn contains_kitty_reply(buf: bytes) -> bool {
+    match (from_utf8(buf)) {
+        Result.Ok(s) => {
+            let n = s.len();
+            var i = 0;
+            var found = false;
+            while (i + 2 < n && !found) {
+                if (char_code(s[i]) == 27 && s[i + 1] == '[' && s[i + 2] == '?') {
+                    var j = i + 3;
+                    var scanning = true;
+                    while (j < n && scanning) {
+                        let c = s[j];
+                        if (c == 'u') {
+                            found = true;
+                            scanning = false;
+                        } else if (c == 'c') {
+                            scanning = false;
+                        } else {
+                            j = j + 1;
+                        }
+                    }
+                }
+                i = i + 1;
+            }
+            found
+        },
+        Result.Err(e) => false,
+    }
+}
+
+// The Primary DA reply ends in 'c' and is the last thing the terminal sends
+// back, so it marks the end of the probe responses.
+fn saw_da_reply(buf: bytes) -> bool {
+    match (from_utf8(buf)) {
+        Result.Ok(s) => {
+            let n = s.len();
+            var i = 0;
+            var found = false;
+            while (i < n && !found) {
+                if (s[i] == 'c') {
+                    found = true;
+                }
+                i = i + 1;
+            }
+            found
+        },
+        Result.Err(e) => false,
+    }
+}
+
+// Ask the terminal for its kitty keyboard flags (CSI ? u) with a Primary DA
+// (CSI c) right behind as a sentinel every terminal answers. If the kitty
+// reply comes back, the protocol is supported. Runs in raw mode at startup;
+// the ~40 ms read for the DA reply is a one-time cost.
+fn detect_kitty() -> bool {
+    let e = screen.esc();
+    io.write(e + "[?u" + e + "[c");
+    io.flush();
+    var buf = b"";
+    var reading = true;
+    var budget = 8;
+    while (reading && budget > 0) {
+        match (io.read_timeout(64, 40)) {
+            io.ReadResult.Data(chunk) => {
+                buf = buf + chunk;
+                if (saw_da_reply(buf)) {
+                    reading = false;
+                }
+            },
+            io.ReadResult.TimedOut => {
+                reading = false;
+            },
+            io.ReadResult.Eof => {
+                reading = false;
+            },
+        }
+        budget = budget - 1;
+    }
+    contains_kitty_reply(buf)
+}
+
+fn event_loop(with_music: bool) -> int {
+    var empty: [string] = [];
+    let dims = start_dims();
+    let a = App { g: shmup.new_game_sized(
+        dims.0,
+        dims.1
+    ), prev: empty, pending: b"", hiscore: load_hiscore(), paused: false, quit: false, music: if (with_music) { music.start() } else { music.off() }, prev_score: 0, prev_lives: 3, prev_stage: 1, prev_over: false, kitty: false, hold_dx: 0, hold_dy: 0, move_deadline: 0, next_move: 0, held_l: false, held_r: false, held_u: false, held_d: false };
+    let e = screen.esc();
+    write_now(e + "[?1049h" + e + "[?25l" + e + "[2J" + e + "[H");
+    // Prefer real key press/release events where the terminal offers them
+    // (CSI > 2 u enables the kitty protocol's event-type reporting).
+    a.kitty = detect_kitty();
+    if (a.kitty) {
+        write_now(e + "[>2u");
+    }
+    repaint(a);
+    var next_frame = time.monotonic() + FRAME_MS;
+    var next_tick = time.monotonic() + shmup.TICK_MS;
+    while (!a.quit) {
+        let now = time.monotonic();
+        if (!a.paused && !a.g.over && now >= next_tick) {
+            shmup.tick(a.g);
+            next_tick = now + shmup.TICK_MS;
+            note_score(a);
+            sync_music(a);
+        }
+        var wait = next_frame - time.monotonic();
+        if (wait < 1) {
+            wait = 1;
+        }
+        match (io.read_timeout(64, wait)) {
+            io.ReadResult.Data(chunk) => {
+                a.pending = a.pending + chunk;
+                drain_keys(a);
+                note_score(a);
+            },
+            io.ReadResult.TimedOut => { },
+            io.ReadResult.Eof => {
+                a.quit = true;
+            },
+        }
+        advance_movement(a, time.monotonic());
+        if (time.monotonic() >= next_frame) {
+            repaint(a);
+            next_frame = next_frame + FRAME_MS;
+            if (next_frame < time.monotonic()) {
+                next_frame = time.monotonic() + FRAME_MS;
+            }
+        }
+    }
+    music.stop(a.music);
+    if (a.kitty) {
+        write_now(e + "[<u");
+    }
+    write_now(e + "[?1049l" + e + "[?25h");
+    print(
+        "score " + to_string(a.g.score) + " · stage " + to_string(a.g.stage) + " · hi " + to_string(a.hiscore)
+    );
+    0
+}
+
+pub fn play(with_music: bool) -> int {
+    if (!term.is_tty(0) || !term.is_tty(1)) {
+        eprint("1942: needs a terminal");
+        return 1;
+    }
+    match (term.raw(fn() -> int { event_loop(with_music) })) {
+        Result.Ok(code) => code,
+        Result.Err(e) => {
+            eprint("1942: " + e);
+            1
+        },
+    }
+}
+
+// --bench: frame build + diff cost, and sleep jitter — can the runtime hold
+// the frame budget with a sky full of bullets?
+pub fn bench() -> int {
+    var g = shmup.new_game();
+    var i = 0;
+    while (i < 200) {
+        shmup.tick(g);
+        i = i + 1;
+    }
+    var prev: [string] = [];
+    let t0 = time.monotonic();
+    var frames = 0;
+    while (frames < 1000) {
+        shmup.move_player(g, if (frames % 2 == 0) { 1 } else { 0 - 1 }, 0);
+        let next = screen.frame(g, 0, false);
+        screen.paint_diff(prev, next);
+        prev = next;
+        frames = frames + 1;
+    }
+    let build_ms = time.monotonic() - t0;
+    print(
+        "frame build+diff: 1000 frames in " + to_string(build_ms) + " ms = " + to_string(build_ms * 1000 / 1000) + " us/frame"
+    );
+    var worst = 0;
+    var total = 0;
+    i = 0;
+    while (i < 60) {
+        let s0 = time.monotonic();
+        time.sleep(FRAME_MS);
+        let took = time.monotonic() - s0;
+        total = total + took;
+        if (took > worst) {
+            worst = took;
+        }
+        i = i + 1;
+    }
+    print(
+        "sleep(" + to_string(FRAME_MS) + ") x60: avg " + to_string(total / 60) + " ms, worst " + to_string(worst) + " ms"
+    );
+    0
+}

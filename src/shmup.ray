@@ -1,0 +1,726 @@
+// 1942 — the rules, pure and clock-free: your fighter over the Pacific, the
+// waves of Zeros diving from the top, and the iconic loop-the-loop (the
+// "roll") that flips you invincible for a beat to slip a bullet. The plane
+// auto-fires straight up; the arrows fly it; the roll is the only special.
+// The app layer owns the clocks — everything here is deterministic given
+// the RNG seed, so the tests can fly whole sorties without a terminal.
+import std/random;
+
+// The field size is chosen at runtime (see the two layouts) and lives on the
+// Game as g.w / g.h, so the aspect can be toggled: the classic 1942 is a tall
+// portrait screen, but a wider board also fits a short terminal.
+pub const W_TALL: int = 20;
+
+pub const H_TALL: int = 30;
+
+pub const W_WIDE: int = 28;
+
+pub const H_WIDE: int = 26;
+
+// Tick cadence (ms) for the world clock; input moves the plane immediately.
+pub const TICK_MS: int = 70;
+
+// Ticks between auto-fire shots, and cells a player bullet climbs per tick.
+pub const FIRE_CD: int = 2;
+
+pub const BULLET_SPEED: int = 2;
+
+// The loop-the-loop: how long the spin lasts (invincible) and how many you
+// carry. Losing a life refills them; each new stage hands you one more.
+pub const ROLL_TICKS: int = 14;
+
+pub const ROLL_MAX: int = 3;
+
+// Invincibility after respawning, so you never die on the frame you return.
+pub const RESPAWN_INVULN: int = 28;
+
+pub const MAX_ENEMIES: int = 14;
+
+pub const KILLS_PER_STAGE: int = 20;
+
+// Weapon power-ups (◇): fly over one to level the gun up, capped at POW_MAX
+// (1 = single shot, 2 = twin, 3 = triple spread). Losing a life drops you back
+// to 1. At max, a pickup pays POW_BONUS points instead. They drop rarely.
+pub const POW_MAX: int = 3;
+
+pub const POW_BONUS: int = 300;
+
+// Spawn chance per tick, out of 1000.
+pub const POW_SPAWN: int = 9;
+
+// Once the gun is maxed, a power-up banks an extra life instead (up to
+// LIVES_MAX); only when even that is full does it pay POW_BONUS points. Extra
+// lives are spent on death like any other.
+pub const LIVES_MAX: int = 9;
+
+// The death blast: the world freezes for this many ticks while the explosion
+// plays, so a hit actually registers, then the plane respawns (or it's over).
+pub const DEATH_TICKS: int = 9;
+
+// The "STAGE n" banner flashes for this many ticks when a new stage begins.
+pub const STAGE_FX_TICKS: int = 18;
+
+// Enemy formations: a coordinated wave drops every WAVE_CD ticks, on top of the
+// random trickle, so the sky has some shape.
+pub const WAVE_CD: int = 55;
+
+// Bosses: a lead carrier appears at the top of every BOSS_STAGE-th stage. Its
+// hull and reward grow each time; it sweeps and rains aimed fire until downed.
+pub const BOSS_STAGE: int = 3;
+
+pub const BOSS_HP_BASE: int = 24;
+
+pub const BOSS_HP_STEP: int = 10;
+
+pub const BOSS_POINTS: int = 5000;
+
+pub const BOSS_FIRE_CD: int = 8;
+
+pub const BOSS_FX_TICKS: int = 12;
+
+// Enemy kinds: the dive-straight Zero, the weaving pair, and the tough red
+// lead plane that aims at you.
+pub const ZAKO: int = 0;
+
+pub const WEAVER: int = 1;
+
+pub const RED: int = 2;
+
+pub struct Plane {
+    x: int,
+    y: int,
+}
+
+pub struct Bullet {
+    x: int,
+    y: int,
+}
+
+// Enemy bullet: falls each tick, drifts dx sideways on the half-beat.
+pub struct Shot {
+    x: int,
+    y: int,
+    dx: int,
+}
+
+pub struct Enemy {
+    x: int,
+    y: int,
+    kind: int,
+    hp: int,
+    dx: int,
+    timer: int,
+}
+
+// A weapon power-up drifting down the screen, collected by flying over it.
+pub struct Pickup {
+    x: int,
+    y: int,
+}
+
+pub struct Game {
+    // Field size; may change when the aspect is toggled (see resize).
+    w: int,
+    h: int,
+    player: Plane,
+    bullets: [Bullet],
+    enemies: [Enemy],
+    shots: [Shot],
+    pickups: [Pickup],
+    fire_cd: int,
+    power: int,
+    roll: int,
+    rolls: int,
+    invuln: int,
+    t: int,
+    score: int,
+    lives: int,
+    stage: int,
+    killed: int,
+    over: bool,
+    // Set by tick() when the auto-fire let a shot go this step, so the sound
+    // layer can chirp without reaching into the bullet list.
+    fired: bool,
+    // Raised when a power-up is collected (on a move or on the world tick), for
+    // the pickup chime; the app consumes and clears it.
+    powered: bool,
+    // The death blast: while death_fx > 0 the world is frozen and an explosion
+    // plays at (death_x, death_y); at 0 the plane respawns or the game ends.
+    death_fx: int,
+    death_x: int,
+    death_y: int,
+    // Ticks left on the "STAGE n" banner flash.
+    stage_fx: int,
+    // Countdown to the next choreographed enemy wave.
+    wave_cd: int,
+    // The boss carrier: boss_hp > 0 means one is on the board, centred at
+    // (boss_x, boss_y), sweeping in boss_dir and firing on boss_timer. boss_max
+    // is its full hull (for the HP bar); boss_fx plays its death blast.
+    boss_hp: int,
+    boss_max: int,
+    boss_x: int,
+    boss_y: int,
+    boss_dir: int,
+    boss_timer: int,
+    boss_fx: int,
+}
+
+fn imin(a: int, b: int) -> int {
+    if (a < b) { a } else { b }
+}
+
+fn imax(a: int, b: int) -> int {
+    if (a > b) { a } else { b }
+}
+
+fn sign(n: int) -> int {
+    if (n > 0) { 1 } else if (n < 0) { 0 - 1 } else { 0 }
+}
+
+fn clamp(v: int, lo: int, hi: int) -> int {
+    if (v < lo) { lo } else if (v > hi) { hi } else { v }
+}
+
+// The default board is the classic tall portrait; new_game_sized picks any.
+pub fn new_game() -> Game {
+    new_game_sized(W_TALL, H_TALL)
+}
+
+pub fn new_game_sized(w: int, h: int) -> Game {
+    var bullets: [Bullet] = [];
+    var enemies: [Enemy] = [];
+    var shots: [Shot] = [];
+    var pickups: [Pickup] = [];
+    Game {
+        w: w,
+        h: h,
+        player: Plane { x: w / 2, y: h - 2 },
+        bullets: bullets,
+        enemies: enemies,
+        shots: shots,
+        pickups: pickups,
+        fire_cd: 0,
+        power: 1,
+        roll: 0,
+        rolls: ROLL_MAX,
+        invuln: RESPAWN_INVULN,
+        t: 0,
+        score: 0,
+        lives: 3,
+        stage: 1,
+        killed: 0,
+        over: false,
+        fired: false,
+        powered: false,
+        death_fx: 0,
+        death_x: 0,
+        death_y: 0,
+        stage_fx: 0,
+        wave_cd: WAVE_CD,
+        boss_hp: 0,
+        boss_max: 0,
+        boss_x: 0,
+        boss_y: 0,
+        boss_dir: 1,
+        boss_timer: 0,
+        boss_fx: 0
+    }
+}
+
+// Change the field size in place, keeping the run: the plane is clamped inside
+// the new bounds and any entity now off the board is culled or clamped.
+pub fn resize(g: Game, w: int, h: int) {
+    if (w == g.w && h == g.h) {
+        return;
+    }
+    g.w = w;
+    g.h = h;
+    g.player.x = clamp(g.player.x, 0, w - 1);
+    g.player.y = clamp(g.player.y, 0, h - 1);
+    g.death_x = clamp(g.death_x, 0, w - 1);
+    g.death_y = clamp(g.death_y, 0, h - 1);
+    g.boss_x = clamp(g.boss_x, 2, w - 3);
+    g.boss_y = clamp(g.boss_y, 0, h - 1);
+    var enemies: [Enemy] = [];
+    for e in g.enemies {
+        if (e.y < h) {
+            e.x = clamp(e.x, 0, w - 1);
+            enemies.push(e);
+        }
+    }
+    g.enemies = enemies;
+    var bullets: [Bullet] = [];
+    for b in g.bullets {
+        if (b.x < w) {
+            bullets.push(b);
+        }
+    }
+    g.bullets = bullets;
+    var shots: [Shot] = [];
+    for s in g.shots {
+        if (s.y < h && s.x < w) {
+            shots.push(s);
+        }
+    }
+    g.shots = shots;
+    var pickups: [Pickup] = [];
+    for p in g.pickups {
+        if (p.y < h) {
+            p.x = clamp(p.x, 0, w - 1);
+            pickups.push(p);
+        }
+    }
+    g.pickups = pickups;
+}
+
+// Fly the plane; arrows queue a delta each and it is clamped to the field.
+// (The plane may roam the whole screen, arcade-style.)
+pub fn move_player(g: Game, dx: int, dy: int) {
+    if (g.over) {
+        return;
+    }
+    g.player.x = clamp(g.player.x + dx, 0, g.w - 1);
+    g.player.y = clamp(g.player.y + dy, 0, g.h - 1);
+    // Grab a power-up the instant we step onto it — checking here (not only on
+    // the world tick) means a fast pass never tunnels over one uncollected.
+    collect_pickups(g);
+}
+
+// Start a loop-the-loop if one is charged and none is already spinning.
+pub fn roll(g: Game) -> bool {
+    if (g.over || g.roll > 0 || g.rolls <= 0) {
+        return false;
+    }
+    g.roll = ROLL_TICKS;
+    g.rolls = g.rolls - 1;
+    true
+}
+
+// The plane is untouchable while rolling or freshly respawned.
+pub fn safe(g: Game) -> bool {
+    g.roll > 0 || g.invuln > 0
+}
+
+fn points(kind: int) -> int {
+    if (kind == RED) { 1000 } else if (kind == WEAVER) { 200 } else { 100 }
+}
+
+fn hp_for(kind: int) -> int {
+    if (kind == RED) { 3 } else { 1 }
+}
+
+fn spawn_enemy(g: Game) {
+    if (g.enemies.len() >= MAX_ENEMIES) {
+        return;
+    }
+    let r = random.below(100);
+    var kind = ZAKO;
+    if (r < 12 + g.stage * 3) {
+        kind = RED;
+    } else if (r < 45) {
+        kind = WEAVER;
+    }
+    let x = 1 + random.below(g.w - 2);
+    let dx = if (random.below(2) == 0) { 1 } else { 0 - 1 };
+    g.enemies.push(Enemy { x: x, y: 0, kind: kind, hp: hp_for(kind), dx: dx, timer: 0 });
+}
+
+fn push_enemy(g: Game, x: int, y: int, kind: int, dx: int) {
+    if (g.enemies.len() >= MAX_ENEMIES) {
+        return;
+    }
+    g.enemies.push(Enemy { x: x, y: y, kind: kind, hp: hp_for(kind), dx: dx, timer: 0 });
+}
+
+// A choreographed wave dropped as one shape: a marching line, a diving V-wedge,
+// or a weaving column that snakes across. Adds shape on top of the trickle.
+fn spawn_formation(g: Game) {
+    if (g.enemies.len() >= MAX_ENEMIES) {
+        return;
+    }
+    let shape = random.below(3);
+    if (shape == 0) {
+        let n = 4 + random.below(3);
+        let gap = imax(2, g.w / (n + 1));
+        var i = 0;
+        while (i < n) {
+            push_enemy(g, clamp(gap * (i + 1), 1, g.w - 2), 0, ZAKO, 0);
+            i = i + 1;
+        }
+    } else if (shape == 1) {
+        let cx = g.w / 2;
+        push_enemy(g, cx, 0, ZAKO, 0);
+        var k = 0;
+        while (k < 3) {
+            push_enemy(g, clamp(cx - (k + 1) * 2, 1, g.w - 2), k + 1, ZAKO, 0);
+            push_enemy(g, clamp(cx + (k + 1) * 2, 1, g.w - 2), k + 1, ZAKO, 0);
+            k = k + 1;
+        }
+    } else {
+        let x = 2 + random.below(g.w - 4);
+        let dir = if (random.below(2) == 0) { 1 } else { 0 - 1 };
+        var j = 0;
+        while (j < 4) {
+            push_enemy(g, x, 0 - j, WEAVER, dir);
+            j = j + 1;
+        }
+    }
+}
+
+// The boss covers a 3-wide, 2-tall block centred on (boss_x, boss_y).
+fn boss_covers(g: Game, x: int, y: int) -> bool {
+    g.boss_hp > 0 && x >= g.boss_x - 1 && x <= g.boss_x + 1 && y >= g.boss_y && y <= g.boss_y + 1
+}
+
+fn spawn_boss(g: Game) {
+    g.boss_max = BOSS_HP_BASE + g.stage / BOSS_STAGE * BOSS_HP_STEP;
+    g.boss_hp = g.boss_max;
+    g.boss_x = g.w / 2;
+    g.boss_y = 1;
+    g.boss_dir = 1;
+    g.boss_timer = 0;
+}
+
+fn boss_defeated(g: Game) {
+    g.score = g.score + BOSS_POINTS;
+    g.killed = g.killed + 1;
+    g.boss_fx = BOSS_FX_TICKS;
+    g.boss_hp = 0;
+    // The carrier's cargo: a guaranteed power-up where it fell.
+    g.pickups.push(Pickup { x: clamp(g.boss_x, 0, g.w - 1), y: g.boss_y });
+}
+
+// The boss sweeps side to side and rains an aimed three-shot spread.
+fn step_boss(g: Game) {
+    if (g.boss_hp <= 0) {
+        return;
+    }
+    if (g.t % 2 == 0) {
+        g.boss_x = g.boss_x + g.boss_dir;
+        if (g.boss_x <= 2) {
+            g.boss_x = 2;
+            g.boss_dir = 1;
+        }
+        if (g.boss_x >= g.w - 3) {
+            g.boss_x = g.w - 3;
+            g.boss_dir = 0 - 1;
+        }
+    }
+    g.boss_timer = g.boss_timer + 1;
+    if (g.boss_timer % BOSS_FIRE_CD == 0 && g.boss_y + 2 < g.h) {
+        let aim = sign(g.player.x - g.boss_x);
+        g.shots.push(Shot { x: g.boss_x, y: g.boss_y + 2, dx: aim });
+        g.shots.push(Shot { x: g.boss_x - 1, y: g.boss_y + 2, dx: 0 - 1 });
+        g.shots.push(Shot { x: g.boss_x + 1, y: g.boss_y + 2, dx: 1 });
+    }
+}
+
+// Lob a bullet from column x if it is on the field.
+fn fire_at(g: Game, x: int, y: int) {
+    if (x >= 0 && x < g.w && y >= 0) {
+        g.bullets.push(Bullet { x: x, y: y });
+    }
+}
+
+// Auto-fire, shaped by the weapon level: a single stream, then twin columns,
+// then a triple. The spread widens the higher the power.
+fn fire(g: Game) {
+    let x = g.player.x;
+    let y = g.player.y - 1;
+    if (g.power <= 1) {
+        fire_at(g, x, y);
+    } else if (g.power == 2) {
+        fire_at(g, x - 1, y);
+        fire_at(g, x + 1, y);
+    } else {
+        fire_at(g, x - 1, y);
+        fire_at(g, x, y);
+        fire_at(g, x + 1, y);
+    }
+}
+
+// Power-ups fall on the half-beat; collecting is handled after they move.
+fn spawn_pickup(g: Game) {
+    let x = 1 + random.below(g.w - 2);
+    g.pickups.push(Pickup { x: x, y: 0 });
+}
+
+fn advance_pickups(g: Game) {
+    var kept: [Pickup] = [];
+    var i = 0;
+    while (i < g.pickups.len()) {
+        let p = g.pickups[i];
+        if (g.t % 2 == 0) {
+            p.y = p.y + 1;
+        }
+        if (p.y < g.h) {
+            kept.push(p);
+        }
+        i = i + 1;
+    }
+    g.pickups = kept;
+}
+
+// Fly over a power-up to level the gun up (or bank points at max); the caught
+// one leaves the field. Works even mid-roll — grabbing power is never punished.
+fn collect_pickups(g: Game) {
+    var kept: [Pickup] = [];
+    var i = 0;
+    while (i < g.pickups.len()) {
+        let p = g.pickups[i];
+        if (p.x == g.player.x && p.y == g.player.y) {
+            if (g.power < POW_MAX) {
+                g.power = g.power + 1;
+            } else if (g.lives < LIVES_MAX) {
+                // Gun already maxed: bank an extra life.
+                g.lives = g.lives + 1;
+            } else {
+                g.score = g.score + POW_BONUS;
+            }
+            g.powered = true;
+        } else {
+            kept.push(p);
+        }
+        i = i + 1;
+    }
+    g.pickups = kept;
+}
+
+// Player bullets climb BULLET_SPEED cells per tick, one sub-step at a time
+// so a fast bullet can never tunnel through an enemy without hitting it.
+fn advance_bullets(g: Game) {
+    var kept: [Bullet] = [];
+    var i = 0;
+    while (i < g.bullets.len()) {
+        let b = g.bullets[i];
+        var alive = true;
+        var step = 0;
+        while (alive && step < BULLET_SPEED) {
+            b.y = b.y - 1;
+            if (b.y < 0) {
+                alive = false;
+            } else if (boss_covers(g, b.x, b.y)) {
+                g.boss_hp = g.boss_hp - 1;
+                alive = false;
+                if (g.boss_hp <= 0) {
+                    boss_defeated(g);
+                }
+            } else {
+                var j = 0;
+                while (j < g.enemies.len()) {
+                    let e = g.enemies[j];
+                    if (e.hp > 0 && e.x == b.x && e.y == b.y) {
+                        e.hp = e.hp - 1;
+                        alive = false;
+                    }
+                    j = j + 1;
+                }
+            }
+            step = step + 1;
+        }
+        if (alive) {
+            kept.push(b);
+        }
+        i = i + 1;
+    }
+    g.bullets = kept;
+}
+
+fn step_enemies(g: Game) {
+    var i = 0;
+    while (i < g.enemies.len()) {
+        let e = g.enemies[i];
+        e.timer = e.timer + 1;
+        if (e.kind == ZAKO) {
+            if (g.t % 2 == 0) {
+                e.y = e.y + 1;
+            }
+        } else if (e.kind == WEAVER) {
+            if (g.t % 2 == 0) {
+                e.y = e.y + 1;
+            }
+            e.x = e.x + e.dx;
+            if (e.x <= 1) {
+                e.x = 1;
+                e.dx = 1;
+            }
+            if (e.x >= g.w - 2) {
+                e.x = g.w - 2;
+                e.dx = 0 - 1;
+            }
+        } else {
+            if (g.t % 3 == 0) {
+                e.y = e.y + 1;
+                e.x = e.x + sign(g.player.x - e.x);
+            }
+            if (!g.over && e.timer % 15 == 0 && e.y < g.h - 1) {
+                g.shots.push(Shot { x: e.x, y: e.y + 1, dx: sign(g.player.x - e.x) });
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn advance_shots(g: Game) {
+    var kept: [Shot] = [];
+    var i = 0;
+    while (i < g.shots.len()) {
+        let s = g.shots[i];
+        s.y = s.y + 1;
+        if (g.t % 2 == 0) {
+            s.x = s.x + s.dx;
+        }
+        if (s.y < g.h && s.x >= 0 && s.x < g.w) {
+            kept.push(s);
+        }
+        i = i + 1;
+    }
+    g.shots = kept;
+}
+
+fn player_hit(g: Game) -> bool {
+    if (boss_covers(g, g.player.x, g.player.y)) {
+        return true;
+    }
+    var i = 0;
+    while (i < g.enemies.len()) {
+        let e = g.enemies[i];
+        if (e.hp > 0 && e.x == g.player.x && e.y == g.player.y) {
+            return true;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < g.shots.len()) {
+        let s = g.shots[i];
+        if (s.x == g.player.x && s.y == g.player.y) {
+            return true;
+        }
+        i = i + 1;
+    }
+    false
+}
+
+// Take a hit: dock a life, clear enemy fire, and light the death blast at the
+// plane's position. The respawn (or game over) waits until the explosion has
+// played out — see resolve_death, run when death_fx reaches 0.
+fn hurt(g: Game) {
+    g.lives = g.lives - 1;
+    var no_shots: [Shot] = [];
+    g.shots = no_shots;
+    g.death_x = g.player.x;
+    g.death_y = g.player.y;
+    g.death_fx = DEATH_TICKS;
+}
+
+// The blast is done: respawn with fresh invincibility and a reset gun, or —
+// out of lives — end the game.
+fn resolve_death(g: Game) {
+    if (g.lives <= 0) {
+        g.lives = 0;
+        g.over = true;
+        return;
+    }
+    g.invuln = RESPAWN_INVULN;
+    g.rolls = ROLL_MAX;
+    g.power = 1;
+    g.player = Plane { x: g.w / 2, y: g.h - 2 };
+}
+
+// Reap enemies: hp<=0 pays out and counts a kill; those off the bottom just
+// leave.
+fn reap_enemies(g: Game) {
+    var kept: [Enemy] = [];
+    var i = 0;
+    while (i < g.enemies.len()) {
+        let e = g.enemies[i];
+        if (e.hp <= 0) {
+            g.score = g.score + points(e.kind);
+            g.killed = g.killed + 1;
+        } else if (e.y < g.h) {
+            kept.push(e);
+        }
+        i = i + 1;
+    }
+    g.enemies = kept;
+}
+
+fn advance_stage(g: Game) {
+    let ns = 1 + g.killed / KILLS_PER_STAGE;
+    if (ns > g.stage) {
+        g.stage = ns;
+        g.stage_fx = STAGE_FX_TICKS;
+        g.rolls = imin(ROLL_MAX, g.rolls + 1);
+        if (g.stage % 3 == 0 && g.lives < 5) {
+            g.lives = g.lives + 1;
+        }
+        // A boss leads every BOSS_STAGE-th stage (if one isn't already up).
+        if (g.stage % BOSS_STAGE == 0 && g.boss_hp <= 0) {
+            spawn_boss(g);
+        }
+    }
+}
+
+// One world step. Order matters: timers, auto-fire, bullets (and their
+// kills), spawn, enemies (move + fire), enemy bullets, then the player's
+// own collisions and the cleanup that pays the score.
+pub fn tick(g: Game) {
+    if (g.over) {
+        return;
+    }
+    g.fired = false;
+    // Hit-stop: while the death blast plays, the whole world holds still (the
+    // sea stops scrolling too, since g.t is frozen) until it resolves.
+    if (g.death_fx > 0) {
+        g.death_fx = g.death_fx - 1;
+        if (g.death_fx == 0) {
+            resolve_death(g);
+        }
+        return;
+    }
+    g.t = g.t + 1;
+    if (g.stage_fx > 0) {
+        g.stage_fx = g.stage_fx - 1;
+    }
+    if (g.boss_fx > 0) {
+        g.boss_fx = g.boss_fx - 1;
+    }
+    if (g.roll > 0) {
+        g.roll = g.roll - 1;
+    }
+    if (g.invuln > 0) {
+        g.invuln = g.invuln - 1;
+    }
+    if (g.fire_cd > 0) {
+        g.fire_cd = g.fire_cd - 1;
+    } else {
+        fire(g);
+        g.fire_cd = FIRE_CD;
+        g.fired = true;
+    }
+    advance_bullets(g);
+    let chance = imin(6 + g.stage * 2, 26);
+    if (random.below(100) < chance) {
+        spawn_enemy(g);
+    }
+    if (random.below(1000) < POW_SPAWN) {
+        spawn_pickup(g);
+    }
+    if (g.wave_cd > 0) {
+        g.wave_cd = g.wave_cd - 1;
+    }
+    if (g.wave_cd == 0) {
+        spawn_formation(g);
+        g.wave_cd = WAVE_CD;
+    }
+    step_enemies(g);
+    step_boss(g);
+    advance_shots(g);
+    advance_pickups(g);
+    collect_pickups(g);
+    if (!safe(g) && player_hit(g)) {
+        hurt(g);
+    }
+    reap_enemies(g);
+    advance_stage(g);
+}

@@ -1,0 +1,87 @@
+// The WSG synth + tracker, pure and deterministic: note frequencies, the
+// s16le sub-step sizing, byte-for-byte reproducibility, and that reactive
+// events actually change the score.
+import wsg;
+
+@test
+fn concert_a_is_440() {
+    assert_eq(wsg.freq_of(69), 440);
+    // Octaves halve/double.
+    assert_eq(wsg.freq_of(57), 220);
+    assert_eq(wsg.freq_of(81), 880);
+}
+
+@test
+fn a_sub_step_is_the_right_size() {
+    let t = wsg.new_tracker();
+    // First sub renders 1213 samples, the second the remainder — s16le mono,
+    // so two bytes each. Together they make one full musical step.
+    let a = wsg.tick(t);
+    let b = wsg.tick(t);
+    assert_eq(a.len(), 1213 * 2);
+    assert_eq(b.len(), (wsg.SAMPLES_PER_STEP - 1213) * 2);
+}
+
+@test
+fn rendering_is_deterministic() {
+    let t1 = wsg.new_tracker();
+    let t2 = wsg.new_tracker();
+    var i = 0;
+    while (i < 8) {
+        assert(wsg.tick(t1) == wsg.tick(t2));
+        i = i + 1;
+    }
+}
+
+@test
+fn events_flip_tracker_state() {
+    let t = wsg.new_tracker();
+    wsg.apply(t, wsg.EV_HIT);
+    assert(t.hit > 0);
+    wsg.apply(t, wsg.EV_OVER);
+    assert(t.over);
+    // Over clears the crash so the descent owns the voices.
+    assert_eq(t.hit, 0);
+    wsg.apply(t, wsg.EV_RESET);
+    assert(!t.over);
+    assert_eq(t.step, 0);
+    // Pause holds, resume releases.
+    wsg.apply(t, wsg.EV_PAUSE);
+    assert(t.paused);
+    wsg.apply(t, wsg.EV_RESUME);
+    assert(!t.paused);
+}
+
+@test
+fn pause_rests_the_whole_band() {
+    let t = wsg.new_tracker();
+    wsg.apply(t, wsg.EV_PAUSE);
+    let quiet = wsg.tick(t);
+    var zeros: [int] = [];
+    var j = 0;
+    while (j < quiet.len()) {
+        zeros.push(0);
+        j = j + 1;
+    }
+    assert(quiet == bytes_of(zeros));
+}
+
+@test
+fn game_over_falls_to_silence() {
+    let t = wsg.new_tracker();
+    wsg.apply(t, wsg.EV_OVER);
+    // Run past the whole farewell (12 steps × 2 subs) and then some.
+    var i = 0;
+    while (i < 40) {
+        wsg.tick(t);
+        i = i + 1;
+    }
+    let quiet = wsg.tick(t);
+    var zeros: [int] = [];
+    var j = 0;
+    while (j < quiet.len()) {
+        zeros.push(0);
+        j = j + 1;
+    }
+    assert(quiet == bytes_of(zeros));
+}

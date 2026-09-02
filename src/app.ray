@@ -162,11 +162,11 @@ fn cell_row(y: int) -> int {
     y + 2
 }
 
-// Sprites are drawn larger than their one-cell hitbox so the aircraft read at a
-// glance: a plane/enemy/pickup fills 4×2 terminal cells, the boss 9×3 — both
-// keep the art's square/3:2 proportions on a ~1:2 cell. The extra size is
-// centred on the actor, bleeding only transparent wing margins into neighbours.
-const ACTOR_W: int = 4;
+// Sprites are drawn a bit larger than their one-cell hitbox so the aircraft
+// read at a glance: a plane/enemy/pickup fills 3×2 terminal cells (~1.5× the
+// original one-cell footprint), the boss 9×3. The extra size is centred on the
+// actor, bleeding only transparent wing margins into neighbouring cells.
+const ACTOR_W: int = 3;
 
 const ACTOR_H: int = 2;
 

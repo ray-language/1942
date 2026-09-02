@@ -162,6 +162,22 @@ fn cell_row(y: int) -> int {
     y + 2
 }
 
+// Sprites are drawn larger than their one-cell hitbox so the aircraft read at a
+// glance: a plane/enemy/pickup fills 4×2 terminal cells, the boss 9×3 — both
+// keep the art's square/3:2 proportions on a ~1:2 cell. The extra size is
+// centred on the actor, bleeding only transparent wing margins into neighbours.
+const ACTOR_W: int = 4;
+
+const ACTOR_H: int = 2;
+
+// Place image `id` scaled to cw×ch cells, centred on the gw×gh game-cell block
+// whose top-left game cell is (gx, gy). A game cell is 2 terminal cols × 1 row.
+fn place_actor(a: App, id: int, gx: int, gy: int, gw: int, gh: int, cw: int, ch: int) {
+    let col = cell_col(gx) - (cw - gw * 2) / 2;
+    let row = cell_row(gy) - (ch - gh) / 2;
+    sprites.place(a.sprites, id, col, row, cw, ch);
+}
+
 // Draw the actors as kitty images over the playfield: clear last frame's
 // placements, then place pickups, the boss, enemies and the fighter (in that
 // z-order) at their cells. A no-op unless the sprite set is ready. Called after
@@ -176,13 +192,13 @@ fn place_sprites(a: App) {
     while (i < g.pickups.len()) {
         let p = g.pickups[i];
         if (p.y >= 0 && p.y < g.h && p.x >= 0 && p.x < g.w) {
-            sprites.place(a.sprites, sprites.ID_POWER, cell_col(p.x), cell_row(p.y), 2, 1);
+            place_actor(a, sprites.ID_POWER, p.x, p.y, 1, 1, ACTOR_W, ACTOR_H);
         }
         i = i + 1;
     }
     if (g.boss_hp > 0) {
         // The boss covers a 3×2 block whose top-left cell is (boss_x-1, boss_y).
-        sprites.place(a.sprites, sprites.ID_BOSS, cell_col(g.boss_x - 1), cell_row(g.boss_y), 6, 2);
+        place_actor(a, sprites.ID_BOSS, g.boss_x - 1, g.boss_y, 3, 2, 9, 3);
     }
     i = 0;
     while (i < g.enemies.len()) {
@@ -195,7 +211,7 @@ fn place_sprites(a: App) {
             } else {
                 sprites.ID_ZERO
             };
-            sprites.place(a.sprites, id, cell_col(e.x), cell_row(e.y), 2, 1);
+            place_actor(a, id, e.x, e.y, 1, 1, ACTOR_W, ACTOR_H);
         }
         i = i + 1;
     }
@@ -211,7 +227,7 @@ fn place_sprites(a: App) {
             } else {
                 sprites.ID_FIGHTER
             };
-            sprites.place(a.sprites, id, cell_col(g.player.x), cell_row(g.player.y), 2, 1);
+            place_actor(a, id, g.player.x, g.player.y, 1, 1, ACTOR_W, ACTOR_H);
         }
     }
     io.flush();

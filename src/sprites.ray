@@ -143,8 +143,10 @@ pub fn demo(force: bool) -> int {
     while (i < ids.len()) {
         let row = 3 + i * 3;
         io.write(at(row, 4) + names[i]);
-        // Sprites are square-ish; 8×3 cells shows them large next to the label.
-        place(s, ids[i], row, 14, 8, 3);
+        // place(id, col, row, cols, rows): sprites at column 14, one per label
+        // row. 4×2 cells keeps the square plane art undistorted (a cell is
+        // about twice as tall as wide), with a row of gap between them.
+        place(s, ids[i], 14, row, 4, 2);
         i = i + 1;
     }
     io.write(at(3 + ids.len() * 3 + 1, 3) + "una tecla para salir…");

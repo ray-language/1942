@@ -117,8 +117,7 @@ raylang.
 | Música reactiva WSG sobre `std/audio` (8 eventos + drone) | ✅ |
 | Pausa, reinicio, `--bench`, `--seed`, `--no-music` | ✅ |
 | Tests (reglas puras + shape del frame + synth byte a byte) | ✅ 32 |
-| Sprites PNG vía kitty graphics — spike (`--sprites`), fallback a glifos | 🧪 |
-| Sprites PNG integrados al render en vivo (place por frame) | 📋 v2 |
+| Sprites PNG (kitty graphics) integrados al render en vivo; fallback a glifos | ✅ |
 
 ## Desarrollo
 
@@ -129,13 +128,19 @@ ray run src/main.ray -- --sprites   # spike de sprites PNG (kitty graphics)
 ray build --native src/main.ray -o 1942 --release
 ```
 
-El spike de **sprites PNG** (`src/sprites.ray`, flag `--sprites`) usa el
-protocolo gráfico kitty de `std/term` (`transmit_image` una vez por sprite +
-`place_image` por frame), con los PNG horneados vía `std/embed`. Detecta el
-soporte con `term.capabilities()` (una sonda APC real: bajo tmux o en un
-terminal sin gráficos cae a `false`) y solo entonces dibuja; en cualquier otro
-caso el juego sigue con su rejilla de glifos intacta. En Ghostty/kitty/WezTerm
-`--sprites` muestra la galería de sprites; falta integrarlos al render en vivo.
+Los **sprites PNG** (`src/sprites.ray`) usan el protocolo gráfico kitty de
+`std/term` (`transmit_image` una vez por sprite al arrancar + `place_image` por
+frame), con los PNG horneados vía `std/embed`. Al iniciar detecta el soporte con
+`term.capabilities()` (una sonda APC real: bajo tmux o en un terminal sin
+gráficos cae a `false`) y solo entonces dibuja los actores —avión, enemigos,
+jefe y power-ups— como imágenes sobre el playfield; en cualquier otro caso el
+juego sigue con su **rejilla de glifos** intacta (mismo binario, sin config). El
+render de texto (mar, panel, balas, disparos y explosiones) es común a ambos
+modos; las imágenes se recolocan tras el diff de texto, solo cuando un actor se
+movió. El flag `--sprites` muestra una galería de los sprites para inspección.
+El arte lo genera `tools/gen_sprites.py` (aviones vistos desde arriba, sin
+dependencias). En Ghostty/kitty/WezTerm el juego se ve con sprites; en cualquier
+otra terminal, con glifos.
 
 Estructura: `src/main.ray` · `shmup.ray` (reglas puras) · `screen.ray`
 (frame + diff) · `app.ray` (bucle + bench + sync de audio) · `wsg.ray` (synth

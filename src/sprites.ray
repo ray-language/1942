@@ -86,6 +86,11 @@ pub fn init(force: bool) -> Sprites {
     Sprites { ok: ok }
 }
 
+// A not-ready set, for a field default before init() runs.
+pub fn disabled() -> Sprites {
+    Sprites { ok: false }
+}
+
 pub fn ready(s: Sprites) -> bool {
     s.ok
 }

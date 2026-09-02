@@ -449,14 +449,14 @@ fn frame_renders_with_boss_and_banner() {
     assert(g.boss_hp > 0);
     assert(g.stage_fx > 0);
     // Rendering the boss, its HP bar and the banner must stay in bounds.
-    let f = screen.frame(g, 0, false);
+    let f = screen.frame(g, 0, false, false);
     assert_eq(f.len(), g.h + 2);
 }
 
 @test
 fn frame_has_fixed_shape() {
     let g = fresh();
-    let f = screen.frame(g, 0, false);
+    let f = screen.frame(g, 0, false, false);
     // A top border, H rows, and a bottom border.
     assert_eq(f.len(), g.h + 2);
     // The score is on the panel.

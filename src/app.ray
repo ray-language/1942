@@ -22,6 +22,7 @@ import std/term;
 from std/term import Key;
 import shmup;
 import screen;
+import sprites;
 import music;
 import wsg;
 
@@ -95,6 +96,12 @@ struct App {
     held_r: bool,
     held_u: bool,
     held_d: bool,
+    // The kitty-graphics sprite layer. When sprites.ok, the actors are drawn as
+    // PNG images placed over the playfield each frame (see place_sprites); the
+    // glyph grid then skips those actors. sprites_dirty marks that an actor
+    // moved (a tick or a steer) so we only re-place when something changed.
+    sprites: sprites.Sprites,
+    sprites_dirty: bool,
 }
 
 fn note_score(a: App) {
@@ -135,12 +142,79 @@ fn sync_music(a: App) {
 }
 
 fn repaint(a: App) {
-    let next = screen.frame(a.g, a.hiscore, a.paused);
+    let next = screen.frame(a.g, a.hiscore, a.paused, a.sprites.ok);
     let ops = screen.paint_diff(a.prev, next);
     if (ops != "") {
         write_now(ops);
     }
     a.prev = next;
+}
+
+// The playfield's top-left in terminal cells (1-based): the frame draws a
+// "  │" prefix (3 cols) so column 4 is the first cell, and the top border is
+// row 1 so game row 0 is terminal row 2. A game cell is two terminal columns
+// wide and one row tall (glyphs like "▲▲").
+fn cell_col(x: int) -> int {
+    4 + x * 2
+}
+
+fn cell_row(y: int) -> int {
+    y + 2
+}
+
+// Draw the actors as kitty images over the playfield: clear last frame's
+// placements, then place pickups, the boss, enemies and the fighter (in that
+// z-order) at their cells. A no-op unless the sprite set is ready. Called after
+// the text diff so the images always land on top of any repainted line.
+fn place_sprites(a: App) {
+    if (!a.sprites.ok) {
+        return;
+    }
+    sprites.clear();
+    let g = a.g;
+    var i = 0;
+    while (i < g.pickups.len()) {
+        let p = g.pickups[i];
+        if (p.y >= 0 && p.y < g.h && p.x >= 0 && p.x < g.w) {
+            sprites.place(a.sprites, sprites.ID_POWER, cell_col(p.x), cell_row(p.y), 2, 1);
+        }
+        i = i + 1;
+    }
+    if (g.boss_hp > 0) {
+        // The boss covers a 3×2 block whose top-left cell is (boss_x-1, boss_y).
+        sprites.place(a.sprites, sprites.ID_BOSS, cell_col(g.boss_x - 1), cell_row(g.boss_y), 6, 2);
+    }
+    i = 0;
+    while (i < g.enemies.len()) {
+        let e = g.enemies[i];
+        if (e.y >= 0 && e.y < g.h && e.x >= 0 && e.x < g.w) {
+            let id = if (e.kind == shmup.RED) {
+                sprites.ID_LEADER
+            } else if (e.kind == shmup.WEAVER) {
+                sprites.ID_WEAVER
+            } else {
+                sprites.ID_ZERO
+            };
+            sprites.place(a.sprites, id, cell_col(e.x), cell_row(e.y), 2, 1);
+        }
+        i = i + 1;
+    }
+    // The fighter last (on top), unless the death blast is playing, the game is
+    // over, or it is mid-invincibility blink (matching the glyph plane).
+    if (!g.over && g.death_fx == 0) {
+        let blink = g.invuln > 0 && g.t % 2 == 0;
+        if (!blink) {
+            sprites.place(
+                a.sprites,
+                sprites.ID_FIGHTER,
+                cell_col(g.player.x),
+                cell_row(g.player.y),
+                2,
+                1
+            );
+        }
+    }
+    io.flush();
 }
 
 // Does the terminal have the rows for the tall portrait board (box = H + 2
@@ -175,6 +249,8 @@ fn toggle_aspect(a: App) {
     var empty: [string] = [];
     a.prev = empty;
     repaint(a);
+    // The screen wipe cleared any images too; redraw them for the new layout.
+    place_sprites(a);
 }
 
 fn on_key(a: App, k: Key) {
@@ -199,6 +275,7 @@ fn on_key(a: App, k: Key) {
                     a.prev_lives = a.g.lives;
                     a.prev_stage = a.g.stage;
                     a.prev_over = false;
+                    a.sprites_dirty = true;
                     music.send_event(a.music, wsg.EV_RESET);
                 }
             } else if (c == 'a') {
@@ -229,6 +306,7 @@ fn set_heading(a: App, dx: int, dy: int, now: int) {
         if (dx != 0 || dy != 0) {
             shmup.move_player(a.g, dx, dy);
             a.next_move = now + REPEAT_DELAY_MS;
+            a.sprites_dirty = true;
         }
     }
 }
@@ -260,6 +338,7 @@ fn steer(a: App, dx: int, dy: int, event: int, now: int) {
         a.move_deadline = now + KITTY_HOLD_MS;
     } else {
         shmup.move_player(a.g, dx, dy);
+        a.sprites_dirty = true;
     }
 }
 
@@ -294,6 +373,7 @@ fn advance_movement(a: App, now: int) {
         shmup.move_player(a.g, a.hold_dx, a.hold_dy);
         a.next_move = a.next_move + REPEAT_RATE_MS;
         steps = steps + 1;
+        a.sprites_dirty = true;
     }
     if (a.next_move < now) {
         a.next_move = now + REPEAT_RATE_MS;
@@ -472,7 +552,7 @@ fn event_loop(with_music: bool) -> int {
     let a = App { g: shmup.new_game_sized(
         dims.0,
         dims.1
-    ), prev: empty, pending: b"", hiscore: load_hiscore(), paused: false, quit: false, music: if (with_music) { music.start() } else { music.off() }, prev_score: 0, prev_lives: 3, prev_stage: 1, prev_over: false, kitty: false, hold_dx: 0, hold_dy: 0, move_deadline: 0, next_move: 0, held_l: false, held_r: false, held_u: false, held_d: false };
+    ), prev: empty, pending: b"", hiscore: load_hiscore(), paused: false, quit: false, music: if (with_music) { music.start() } else { music.off() }, prev_score: 0, prev_lives: 3, prev_stage: 1, prev_over: false, kitty: false, hold_dx: 0, hold_dy: 0, move_deadline: 0, next_move: 0, held_l: false, held_r: false, held_u: false, held_d: false, sprites: sprites.disabled(), sprites_dirty: true };
     let e = screen.esc();
     write_now(e + "[?1049h" + e + "[?25l" + e + "[2J" + e + "[H");
     // Prefer real key press/release events where the terminal offers them
@@ -481,7 +561,11 @@ fn event_loop(with_music: bool) -> int {
     if (a.kitty) {
         write_now(e + "[>2u");
     }
+    // Probe for the kitty graphics protocol and upload the PNG sprites once; on
+    // any terminal that can't draw them, the glyph renderer carries the game.
+    a.sprites = sprites.init(false);
     repaint(a);
+    place_sprites(a);
     var next_frame = time.monotonic() + FRAME_MS;
     var next_tick = time.monotonic() + shmup.TICK_MS;
     while (!a.quit) {
@@ -491,6 +575,7 @@ fn event_loop(with_music: bool) -> int {
             next_tick = now + shmup.TICK_MS;
             note_score(a);
             sync_music(a);
+            a.sprites_dirty = true;
         }
         var wait = next_frame - time.monotonic();
         if (wait < 1) {
@@ -510,6 +595,12 @@ fn event_loop(with_music: bool) -> int {
         advance_movement(a, time.monotonic());
         if (time.monotonic() >= next_frame) {
             repaint(a);
+            // Re-place the sprites only when an actor moved (a tick or a steer),
+            // so a still frame costs nothing on the graphics layer.
+            if (a.sprites.ok && a.sprites_dirty) {
+                place_sprites(a);
+                a.sprites_dirty = false;
+            }
             next_frame = next_frame + FRAME_MS;
             if (next_frame < time.monotonic()) {
                 next_frame = time.monotonic() + FRAME_MS;
@@ -517,6 +608,9 @@ fn event_loop(with_music: bool) -> int {
         }
     }
     music.stop(a.music);
+    if (a.sprites.ok) {
+        sprites.clear();
+    }
     if (a.kitty) {
         write_now(e + "[<u");
     }
@@ -555,7 +649,7 @@ pub fn bench() -> int {
     var frames = 0;
     while (frames < 1000) {
         shmup.move_player(g, if (frames % 2 == 0) { 1 } else { 0 - 1 }, 0);
-        let next = screen.frame(g, 0, false);
+        let next = screen.frame(g, 0, false, false);
         screen.paint_diff(prev, next);
         prev = next;
         frames = frames + 1;

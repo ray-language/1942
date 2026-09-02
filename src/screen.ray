@@ -231,7 +231,11 @@ fn banner_row(g: shmup.Game) -> string {
     esc() + "[1;7;93m" + " ".repeat(lp) + label + " ".repeat(rp) + esc() + "[0m"
 }
 
-pub fn frame(g: shmup.Game, hiscore: int, paused: bool) -> [string] {
+// sprites_on: the kitty-graphics layer is drawing the actors as PNG sprites, so
+// skip their glyphs here — leave the bare sea in those cells and let the
+// transparent sprites composite over it (bullets, enemy fire and the blasts
+// stay as glyphs regardless). Off, everything is stamped as before.
+pub fn frame(g: shmup.Game, hiscore: int, paused: bool, sprites_on: bool) -> [string] {
     let th = theme_of(g.stage);
     let bg = th.bg;
     var glyph: [string] = [];
@@ -242,25 +246,27 @@ pub fn frame(g: shmup.Game, hiscore: int, paused: bool) -> [string] {
     }
     // Power-ups on the water, then the boss, enemies, enemy fire, player
     // bullets, and the fighter on top (so it visibly scoops a pickup as it
-    // flies over).
-    i = 0;
-    while (i < g.pickups.len()) {
-        let p = g.pickups[i];
-        if (p.y >= 0 && p.y < g.h && p.x >= 0 && p.x < g.w) {
-            glyph[p.y * g.w + p.x] = cellb(bg, 213, "◇◇");
+    // flies over). Under the sprite layer, these actors are drawn as images.
+    if (!sprites_on) {
+        i = 0;
+        while (i < g.pickups.len()) {
+            let p = g.pickups[i];
+            if (p.y >= 0 && p.y < g.h && p.x >= 0 && p.x < g.w) {
+                glyph[p.y * g.w + p.x] = cellb(bg, 213, "◇◇");
+            }
+            i = i + 1;
         }
-        i = i + 1;
-    }
-    if (g.boss_hp > 0) {
-        stamp_boss(glyph, g, bg);
-    }
-    i = 0;
-    while (i < g.enemies.len()) {
-        let e = g.enemies[i];
-        if (e.y >= 0 && e.y < g.h && e.x >= 0 && e.x < g.w) {
-            glyph[e.y * g.w + e.x] = enemy_glyph(bg, e);
+        if (g.boss_hp > 0) {
+            stamp_boss(glyph, g, bg);
         }
-        i = i + 1;
+        i = 0;
+        while (i < g.enemies.len()) {
+            let e = g.enemies[i];
+            if (e.y >= 0 && e.y < g.h && e.x >= 0 && e.x < g.w) {
+                glyph[e.y * g.w + e.x] = enemy_glyph(bg, e);
+            }
+            i = i + 1;
+        }
     }
     i = 0;
     while (i < g.shots.len()) {
@@ -284,7 +290,7 @@ pub fn frame(g: shmup.Game, hiscore: int, paused: bool) -> [string] {
             r = 3;
         }
         stamp_blast(glyph, g, bg, g.death_x, g.death_y, r);
-    } else if (!g.over) {
+    } else if (!g.over && !sprites_on) {
         glyph[g.player.y * g.w + g.player.x] = plane_glyph(bg, g);
     }
     // The boss's own death blast, larger, over where it fell.

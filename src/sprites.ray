@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
+// 1942 — the kitty-graphics sprite layer (a v2 spike). Where the terminal
+// speaks the kitty graphics protocol (Ghostty/WezTerm/kitty), real PNG sprites
+// replace the Unicode glyphs: each sprite is decoded once from an embedded PNG
+// (std/embed → std/image) and transmitted to the terminal under a stable id
+// (std/term.transmit_image), then shown per frame with a ~30-byte place_image.
+// Everywhere else — a legacy terminal, or under tmux, which swallows the APC —
+// init() reports not-ready and the caller keeps the glyph grid untouched. This
+// module is self-contained and off by default; the game only reaches it through
+// the `--sprites` demo for now (see main), so the tested renderer is unchanged.
+import std/io;
+import std/time;
+import std/term;
+import std/embed;
+import std/image;
+
+// Stable kitty image ids, caller-chosen and > 0 (the protocol keys pixels by
+// id; we pick one per sprite and keep it for the life of the process).
+pub const ID_FIGHTER: int = 1;
+
+pub const ID_ZERO: int = 2;
+
+pub const ID_WEAVER: int = 3;
+
+pub const ID_LEADER: int = 4;
+
+pub const ID_POWER: int = 5;
+
+pub const ID_BOSS: int = 6;
+
+// The sprite set's readiness. ok = every PNG decoded and transmitted; when
+// false the caller renders glyphs exactly as before.
+pub struct Sprites {
+    ok: bool,
+}
+
+// Decode one embedded PNG and upload its pixels to the terminal under `id`,
+// without showing it. Any failure (missing asset, bad PNG, refused transmit)
+// is a soft false — never a crash — so one broken sprite just disables the set.
+fn transmit(id: int, key: string) -> bool {
+    match (embed.read(key)) {
+        Result.Ok(data) => {
+            match (image.decode_png(data)) {
+                Result.Ok(img) => {
+                    match (term.transmit_image(id, img)) {
+                        Result.Ok(n) => true,
+                        Result.Err(e) => false,
+                    }
+                },
+                Result.Err(e) => false,
+            }
+        },
+        Result.Err(e) => false,
+    }
+}
+
+// Detect kitty graphics (a real APC probe — false under tmux, correctly) and,
+// if present, upload every sprite once. `force` skips the probe to exercise the
+// transmit/place path on a terminal that can't be probed (tests/capture). On
+// any miss, ok stays false and the caller falls back to glyphs.
+pub fn init(force: bool) -> Sprites {
+    if (!force && !term.capabilities().kitty_graphics) {
+        return Sprites { ok: false };
+    }
+    var ok = true;
+    if (!transmit(ID_FIGHTER, "assets/fighter.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_ZERO, "assets/zero.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_WEAVER, "assets/weaver.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_LEADER, "assets/leader.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_POWER, "assets/power.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_BOSS, "assets/boss.png")) {
+        ok = false;
+    }
+    Sprites { ok: ok }
+}
+
+pub fn ready(s: Sprites) -> bool {
+    s.ok
+}
+
+// Show a transmitted sprite at terminal cell (col, row) (1-based), scaled to
+// cols × rows cells (0 = natural). A no-op when the set isn't ready, so callers
+// need no branch of their own.
+pub fn place(s: Sprites, id: int, col: int, row: int, cols: int, rows: int) {
+    if (s.ok) {
+        term.place_image(id, col, row, cols, rows);
+    }
+}
+
+// Take everything off the screen (the terminal keeps the pixels, so a later
+// place() needs no retransmit).
+pub fn clear() {
+    term.clear_images();
+}
+
+fn esc() -> string {
+    "\u{1B}"
+}
+
+fn at(row: int, col: int) -> string {
+    esc() + "[" + to_string(row) + ";" + to_string(col) + "H"
+}
+
+// The spike's proof: a labelled gallery of every sprite, drawn with the kitty
+// protocol over the terminal's own background, held until a key is pressed.
+// `force` bypasses capability detection (for headless/capture checks).
+pub fn demo(force: bool) -> int {
+    if (!term.is_tty(1)) {
+        // No terminal to draw on: still exercise decode+transmit under force so
+        // a capture/CI run proves the pipeline, then report and leave.
+        let probe = init(force);
+        eprint("1942 sprites: tty=false ready=" + to_string(probe.ok));
+        return 0;
+    }
+    let e = esc();
+    io.write(e + "[2J" + e + "[H" + e + "[?25l");
+    io.flush();
+    let s = init(force);
+    if (!s.ok) {
+        io.write(
+            at(2, 3) + "Gráficos kitty no disponibles aquí (o bajo tmux)." + at(3, 3) + "El juego usa la rejilla de glifos — nada que hacer." + at(5, 3)
+        );
+        io.write(e + "[?25h");
+        io.flush();
+        return 0;
+    }
+    io.write(at(1, 3) + esc() + "[1;93m✈ 1942 — sprites PNG (kitty graphics)" + esc() + "[0m");
+    let ids = [ID_FIGHTER, ID_ZERO, ID_WEAVER, ID_LEADER, ID_POWER, ID_BOSS];
+    let names = ["caza", "zero", "weaver", "líder", "arma", "jefe"];
+    var i = 0;
+    while (i < ids.len()) {
+        let row = 3 + i * 3;
+        io.write(at(row, 4) + names[i]);
+        // Sprites are square-ish; 8×3 cells shows them large next to the label.
+        place(s, ids[i], row, 14, 8, 3);
+        i = i + 1;
+    }
+    io.write(at(3 + ids.len() * 3 + 1, 3) + "una tecla para salir…");
+    io.flush();
+    // Hold the gallery until a keypress (raw so a single key returns at once).
+    term.raw(fn() -> int {
+        match (term.read_key()) {
+            Option.Some(k) => 0,
+            Option.None => 0,
+        }
+    });
+    clear();
+    io.write(e + "[2J" + e + "[H" + e + "[?25h");
+    io.flush();
+    0
+}

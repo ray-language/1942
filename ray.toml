@@ -4,3 +4,8 @@ version = "0.1.0"
 license = "Apache-2.0"
 
 [dependencies]
+
+[native]
+# PNG sprite assets for the kitty-graphics layer (src/sprites.ray). Read live
+# from disk in dev; baked into the binary by `ray build --native`.
+embed = ["assets"]

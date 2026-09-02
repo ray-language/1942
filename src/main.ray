@@ -4,6 +4,7 @@
 // 1942 — the iconic vertical shoot 'em up in the terminal at 30 fps.
 import std/random;
 import app;
+import sprites;
 
 fn main() -> int {
     let av = args();
@@ -12,6 +13,12 @@ fn main() -> int {
         if (a == "--bench") {
             return app.bench();
         }
+        if (a == "--sprites") {
+            return sprites.demo(false);
+        }
+        if (a == "--sprites-force") {
+            return sprites.demo(true);
+        }
         if (a == "--seed") {
             random.seed(42);
         }
@@ -19,8 +26,9 @@ fn main() -> int {
             with_music = false;
         }
         if (a == "--help" || a == "-h") {
-            eprint("usage: 1942 [--bench] [--seed] [--no-music]");
+            eprint("usage: 1942 [--bench] [--sprites] [--seed] [--no-music]");
             eprint("  ← → ↑ ↓ volar · espacio tonel (roll) · p pausa · r reinicia · q salir");
+            eprint("  --sprites:  demo de sprites PNG (kitty graphics; glifos si no hay soporte)");
             eprint("  --no-music: sin sonido (o si no hay dispositivo de audio, calla solo)");
             return 0;
         }

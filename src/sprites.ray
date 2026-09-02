@@ -30,6 +30,15 @@ pub const ID_POWER: int = 5;
 
 pub const ID_BOSS: int = 6;
 
+// The four loop-the-loop (roll) frames of the fighter, cycled while spinning.
+pub const ID_ROLL0: int = 7;
+
+pub const ID_ROLL1: int = 8;
+
+pub const ID_ROLL2: int = 9;
+
+pub const ID_ROLL3: int = 10;
+
 // The sprite set's readiness. ok = every PNG decoded and transmitted; when
 // false the caller renders glyphs exactly as before.
 pub struct Sprites {
@@ -83,7 +92,34 @@ pub fn init(force: bool) -> Sprites {
     if (!transmit(ID_BOSS, "assets/boss.png")) {
         ok = false;
     }
+    if (!transmit(ID_ROLL0, "assets/fighter_roll0.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_ROLL1, "assets/fighter_roll1.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_ROLL2, "assets/fighter_roll2.png")) {
+        ok = false;
+    }
+    if (!transmit(ID_ROLL3, "assets/fighter_roll3.png")) {
+        ok = false;
+    }
     Sprites { ok: ok }
+}
+
+// The fighter image id for roll-cycle step i (wraps every 4): full span, wings
+// pulling in, knife edge, full span inverted.
+pub fn roll_frame_id(i: int) -> int {
+    let f = (i % 4 + 4) % 4;
+    if (f == 0) {
+        ID_ROLL0
+    } else if (f == 1) {
+        ID_ROLL1
+    } else if (f == 2) {
+        ID_ROLL2
+    } else {
+        ID_ROLL3
+    }
 }
 
 // A not-ready set, for a field default before init() runs.

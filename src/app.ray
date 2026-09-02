@@ -204,14 +204,14 @@ fn place_sprites(a: App) {
     if (!g.over && g.death_fx == 0) {
         let blink = g.invuln > 0 && g.t % 2 == 0;
         if (!blink) {
-            sprites.place(
-                a.sprites,
-                sprites.ID_FIGHTER,
-                cell_col(g.player.x),
-                cell_row(g.player.y),
-                2,
-                1
-            );
+            // Mid-roll, cycle the four barrel-roll frames on the same cadence as
+            // the glyph plane; otherwise the level fighter.
+            let id = if (g.roll > 0) {
+                sprites.roll_frame_id((shmup.ROLL_TICKS - g.roll) / 2)
+            } else {
+                sprites.ID_FIGHTER
+            };
+            sprites.place(a.sprites, id, cell_col(g.player.x), cell_row(g.player.y), 2, 1);
         }
     }
     io.flush();

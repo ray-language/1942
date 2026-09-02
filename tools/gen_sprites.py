@@ -100,37 +100,45 @@ def vflip(cv):
 
 # ---- an aircraft, seen from above, nose UP (north) ------------------------
 def fighter(W, H, pal, wing_span=0.94, wing_sweep=0.10, tail=True,
-            roundel=None, engines=0, twin_tail=False):
+            roundel=None, engines=0, twin_tail=False, squash=1.0,
+            inverted=False):
+    # squash < 1 pulls the wingspan in toward the fuselage (a barrel-roll seen
+    # from above: full span -> knife edge -> full span again); inverted flips to
+    # the belly (no canopy, a lit underside) for the far half of the roll.
     cv = Canvas(W, H)
     cx = W / 2
     base, shade, light = pal["base"], pal["shade"], pal["light"]
     canopy = pal["canopy"]
     nose = pal.get("nose", shade)
 
+    def sx(x):
+        return cx + (x - cx) * squash
+
     # spinning-prop disc (translucent) at the very nose — a flat wide blur, so
     # it reads as a propeller rather than a mast
     prop = (205, 208, 212, 110)
-    ellipse(cv, cx, H * 0.085, W * 0.20, H * 0.022, prop)
-    ellipse(cv, cx, H * 0.085, W * 0.03, H * 0.035, (205, 208, 212, 70))
+    ellipse(cv, cx, H * 0.085, W * 0.20 * squash, H * 0.022, prop)
+    ellipse(cv, cx, H * 0.085, W * 0.03 * squash, H * 0.035, (205, 208, 212, 70))
 
     # main wing: swept-back hexagon meeting at a center ridge
     wl = W * (1 - wing_span) / 2
     wr = W - wl
     wy = H * 0.50
     sweep = H * wing_sweep
-    poly(cv, [(cx, wy - H * 0.05), (wl, wy + sweep), (wl, wy + sweep + H * 0.045),
-              (cx, wy + H * 0.11), (wr, wy + sweep + H * 0.045), (wr, wy + sweep)],
-         base)
+    poly(cv, [(cx, wy - H * 0.05), (sx(wl), wy + sweep),
+              (sx(wl), wy + sweep + H * 0.045), (cx, wy + H * 0.11),
+              (sx(wr), wy + sweep + H * 0.045), (sx(wr), wy + sweep)], base)
     # wing tips + trailing-edge shading
-    poly(cv, [(cx, wy + H * 0.06), (wl, wy + sweep + H * 0.02),
-              (wl, wy + sweep + H * 0.045), (cx, wy + H * 0.11),
-              (wr, wy + sweep + H * 0.045), (wr, wy + sweep + H * 0.02)], shade)
+    poly(cv, [(cx, wy + H * 0.06), (sx(wl), wy + sweep + H * 0.02),
+              (sx(wl), wy + sweep + H * 0.045), (cx, wy + H * 0.11),
+              (sx(wr), wy + sweep + H * 0.045), (sx(wr), wy + sweep + H * 0.02)],
+         shade)
 
     # engine nacelles on the wings (for the boss/bomber)
     if engines:
         for s in range(engines):
             frac = (s + 1) / (engines + 1)
-            ex = wl + (wr - wl) * frac
+            ex = sx(wl + (wr - wl) * frac)
             if abs(ex - cx) < W * 0.10:
                 continue
             ellipse(cv, ex, wy + sweep * 0.6, W * 0.035, H * 0.11, shade)
@@ -141,16 +149,19 @@ def fighter(W, H, pal, wing_span=0.94, wing_sweep=0.10, tail=True,
     # roundels (rising-sun style) on each wing
     if roundel:
         for s in (-1, 1):
-            rx = cx + s * W * 0.28
-            circle(cv, rx, wy + sweep + H * 0.01, W * 0.055, (235, 235, 230, 255))
-            circle(cv, rx, wy + sweep + H * 0.01, W * 0.038, roundel)
+            rx = sx(cx + s * W * 0.28)
+            circle(cv, rx, wy + sweep + H * 0.01, W * 0.055 * squash,
+                   (235, 235, 230, 255))
+            circle(cv, rx, wy + sweep + H * 0.01, W * 0.038 * squash, roundel)
 
-    # fuselage (long vertical body) with a lighter dorsal spine
+    # fuselage (long vertical body); a lighter dorsal spine when upright, a lit
+    # belly when rolled onto its back
     ellipse(cv, cx, H * 0.50, W * 0.085, H * 0.40, base)
-    # dorsal spine highlight
-    ellipse(cv, cx - W * 0.012, H * 0.46, W * 0.03, H * 0.30, light)
-    # fuselage outline shade on the right
-    ellipse(cv, cx + W * 0.055, H * 0.52, W * 0.03, H * 0.34, shade)
+    if inverted:
+        ellipse(cv, cx, H * 0.50, W * 0.05, H * 0.34, light)
+    else:
+        ellipse(cv, cx - W * 0.012, H * 0.46, W * 0.03, H * 0.30, light)
+        ellipse(cv, cx + W * 0.055, H * 0.52, W * 0.03, H * 0.34, shade)
 
     # nose cone / spinner
     ellipse(cv, cx, H * 0.135, W * 0.055, H * 0.075, nose)
@@ -158,18 +169,19 @@ def fighter(W, H, pal, wing_span=0.94, wing_sweep=0.10, tail=True,
     # tailplane (horizontal stabilizer near the tail)
     if tail:
         ty = H * 0.85
-        poly(cv, [(cx, ty - H * 0.03), (cx - W * 0.24, ty + H * 0.02),
-                  (cx - W * 0.24, ty + H * 0.04), (cx, ty + H * 0.05),
-                  (cx + W * 0.24, ty + H * 0.04), (cx + W * 0.24, ty + H * 0.02)],
-             base)
+        poly(cv, [(cx, ty - H * 0.03), (sx(cx - W * 0.24), ty + H * 0.02),
+                  (sx(cx - W * 0.24), ty + H * 0.04), (cx, ty + H * 0.05),
+                  (sx(cx + W * 0.24), ty + H * 0.04),
+                  (sx(cx + W * 0.24), ty + H * 0.02)], base)
     if twin_tail:
         for s in (-1, 1):
-            ellipse(cv, cx + s * W * 0.22, H * 0.88, W * 0.03, H * 0.06, shade)
+            ellipse(cv, sx(cx + s * W * 0.22), H * 0.88, W * 0.03, H * 0.06, shade)
 
-    # canopy (cockpit glass) with a glint
-    ellipse(cv, cx, H * 0.42, W * 0.05, H * 0.085, canopy)
-    ellipse(cv, cx - W * 0.015, H * 0.40, W * 0.02, H * 0.03,
-            (255, 255, 255, 150))
+    # canopy (cockpit glass) with a glint — hidden when belly-up
+    if not inverted:
+        ellipse(cv, cx, H * 0.42, W * 0.05, H * 0.085, canopy)
+        ellipse(cv, cx - W * 0.015, H * 0.40, W * 0.02, H * 0.03,
+                (255, 255, 255, 150))
     return cv
 
 
@@ -216,6 +228,13 @@ def power_gem(W, H):
 # Player fighter: nose up (flies north).
 write_png(f"{OUT}/fighter.png", fighter(40, 40, GREEN, wing_span=0.94,
           wing_sweep=0.06, roundel=(230, 230, 235, 255)))
+# The loop-the-loop: four frames of a barrel roll — full span, wings pulling in,
+# knife edge onto the belly, then full span inverted. Cycled while rolling.
+ROLL = [(1.0, False), (0.42, False), (0.16, True), (0.6, True)]
+for i, (sq, inv) in enumerate(ROLL):
+    write_png(f"{OUT}/fighter_roll{i}.png", fighter(40, 40, GREEN,
+              wing_span=0.94, wing_sweep=0.06, roundel=(230, 230, 235, 255),
+              squash=sq, inverted=inv))
 # Zeros dive at you: nose down, with rising-sun roundels.
 write_png(f"{OUT}/zero.png", vflip(fighter(40, 40, GRAY, wing_span=0.92,
           wing_sweep=0.05, roundel=ROUNDEL_RED)))

@@ -94,7 +94,7 @@ Capcom y no se transcribe).
 
 | Métrica | VM |
 |---|---|
-| Frame completo (lógica + layout + diff), 1000 frames | ~260 µs/frame |
+| Frame completo (lógica + layout + diff), 1000 frames | ~240 µs/frame (filas de mar cacheadas; ~640 sin caché) |
 | `sleep(33)` × 60 — media / peor | 33 ms / 35 ms |
 
 El render jamás es el cuello del presupuesto de 33 ms, y el bucle planifica por

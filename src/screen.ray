@@ -84,6 +84,53 @@ fn island(x: int, y: int, t: int) -> bool {
     ((gx * 13 + gy * 7) % 19 + 19) % 19 == 0
 }
 
+// The sea row cache. A row of ocean depends only on the theme, the row's
+// parity and its two scroll clocks (`y - t/2` for the speckle, `y - t/6` for
+// the islands) — never on the actors — so the same row comes back frame after
+// frame as the water slides south. Building it once per key drops the per-cell
+// work of `sea` from ~w*h calls per frame to at most a few rows per tick
+// (measured with `ray profile`: `sea`+`island`+`canvas` were >80 % of `frame`).
+pub struct SeaCache {
+    rows: Map<string, [string]>,
+}
+
+pub fn new_sea_cache() -> SeaCache {
+    let rows: Map<string, [string]> = Map.new();
+    SeaCache { rows: rows }
+}
+
+// The ocean cells of row `y` at tick `t`, from the cache or freshly built. The
+// cache is bounded: past ~2000 rows (a long game's worth of scrolling) it
+// simply starts over — the keys are only ever new as time advances.
+fn sea_row(th: Theme, cache: SeaCache, y: int, t: int, w: int) -> [string] {
+    let key = to_string(th.bg)
+        + ":"
+        + to_string(y - t / 2)
+        + ":"
+        + to_string(y - t / 6)
+        + ":"
+        + to_string(y % 2)
+        + ":"
+        + to_string(w);
+    match (get(cache.rows, key)) {
+        Option.Some(r) => r,
+        Option.None => {
+            var r: [string] = [];
+            var x = 0;
+            while (x < w) {
+                r.push(sea(th, x, y, t));
+                x = x + 1;
+            }
+            if (cache.rows.len() > 2000) {
+                let fresh: Map<string, [string]> = Map.new();
+                cache.rows = fresh;
+            }
+            cache.rows.insert(key, r);
+            r
+        },
+    }
+}
+
 // The ocean for the current theme: muted islands first, then fast wave crests
 // and a dimmer foam speckle, so the fighter reads as racing north even at a
 // hover — but the whole sea stays low-contrast under the sprites.
@@ -236,6 +283,17 @@ fn banner_row(g: shmup.Game) -> string {
 // transparent sprites composite over it (bullets, enemy fire and the blasts
 // stay as glyphs regardless). Off, everything is stamped as before.
 pub fn frame(g: shmup.Game, hiscore: int, paused: bool, sprites_on: bool) -> [string] {
+    frame_with(g, hiscore, paused, sprites_on, new_sea_cache())
+}
+
+// `frame` with a sea cache that outlives the call (the game loop keeps one).
+pub fn frame_with(
+    g: shmup.Game,
+    hiscore: int,
+    paused: bool,
+    sprites_on: bool,
+    cache: SeaCache
+) -> [string] {
     let th = theme_of(g.stage);
     let bg = th.bg;
     var glyph: [string] = [];
@@ -311,10 +369,11 @@ pub fn frame(g: shmup.Game, hiscore: int, paused: bool, sprites_on: bool) -> [st
         if (g.stage_fx > 0 && y == banner_y) {
             row = row + banner_row(g);
         } else {
+            let water = sea_row(th, cache, y, g.t, g.w);
             var x = 0;
             while (x < g.w) {
                 let c = glyph[y * g.w + x];
-                row = row + if (c == "") { sea(th, x, y, g.t) } else { c };
+                row = row + if (c == "") { water[x] } else { c };
                 x = x + 1;
             }
         }

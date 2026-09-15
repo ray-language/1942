@@ -71,6 +71,7 @@ fn save_hiscore(n: int) {
 struct App {
     g: shmup.Game,
     prev: [string],
+    sea: screen.SeaCache,
     pending: bytes,
     hiscore: int,
     paused: bool,
@@ -142,7 +143,7 @@ fn sync_music(a: App) {
 }
 
 fn repaint(a: App) {
-    let next = screen.frame(a.g, a.hiscore, a.paused, a.sprites.ok);
+    let next = screen.frame_with(a.g, a.hiscore, a.paused, a.sprites.ok, a.sea);
     let ops = screen.paint_diff(a.prev, next);
     if (ops != "") {
         write_now(ops);
@@ -568,7 +569,11 @@ fn event_loop(with_music: bool) -> int {
     let a = App { g: shmup.new_game_sized(
         dims.0,
         dims.1
-    ), prev: empty, pending: b"", hiscore: load_hiscore(), paused: false, quit: false, music: if (with_music) { music.start() } else { music.off() }, prev_score: 0, prev_lives: 3, prev_stage: 1, prev_over: false, kitty: false, hold_dx: 0, hold_dy: 0, move_deadline: 0, next_move: 0, held_l: false, held_r: false, held_u: false, held_d: false, sprites: sprites.disabled(), sprites_dirty: true };
+    ), prev: empty, sea: screen.new_sea_cache(), pending: b"", hiscore: load_hiscore(), paused: false, quit: false, music: if (with_music) {
+        music.start()
+    } else {
+        music.off()
+    }, prev_score: 0, prev_lives: 3, prev_stage: 1, prev_over: false, kitty: false, hold_dx: 0, hold_dy: 0, move_deadline: 0, next_move: 0, held_l: false, held_r: false, held_u: false, held_d: false, sprites: sprites.disabled(), sprites_dirty: true };
     let e = screen.esc();
     write_now(e + "[?1049h" + e + "[?25l" + e + "[2J" + e + "[H");
     // Prefer real key press/release events where the terminal offers them
@@ -632,7 +637,12 @@ fn event_loop(with_music: bool) -> int {
     }
     write_now(e + "[?1049l" + e + "[?25h");
     print(
-        "score " + to_string(a.g.score) + " · stage " + to_string(a.g.stage) + " · hi " + to_string(a.hiscore)
+        "score "
+            + to_string(a.g.score)
+            + " · stage "
+            + to_string(a.g.stage)
+            + " · hi "
+            + to_string(a.hiscore)
     );
     0
 }
@@ -661,18 +671,23 @@ pub fn bench() -> int {
         i = i + 1;
     }
     var prev: [string] = [];
+    let cache = screen.new_sea_cache();
     let t0 = time.monotonic();
     var frames = 0;
     while (frames < 1000) {
         shmup.move_player(g, if (frames % 2 == 0) { 1 } else { 0 - 1 }, 0);
-        let next = screen.frame(g, 0, false, false);
+        let next = screen.frame_with(g, 0, false, false, cache);
         screen.paint_diff(prev, next);
         prev = next;
         frames = frames + 1;
     }
     let build_ms = time.monotonic() - t0;
     print(
-        "frame build+diff: 1000 frames in " + to_string(build_ms) + " ms = " + to_string(build_ms * 1000 / 1000) + " us/frame"
+        "frame build+diff: 1000 frames in "
+            + to_string(build_ms)
+            + " ms = "
+            + to_string(build_ms * 1000 / 1000)
+            + " us/frame"
     );
     var worst = 0;
     var total = 0;
@@ -688,7 +703,13 @@ pub fn bench() -> int {
         i = i + 1;
     }
     print(
-        "sleep(" + to_string(FRAME_MS) + ") x60: avg " + to_string(total / 60) + " ms, worst " + to_string(worst) + " ms"
+        "sleep("
+            + to_string(FRAME_MS)
+            + ") x60: avg "
+            + to_string(total / 60)
+            + " ms, worst "
+            + to_string(worst)
+            + " ms"
     );
     0
 }

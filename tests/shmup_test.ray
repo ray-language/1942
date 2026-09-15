@@ -454,6 +454,30 @@ fn frame_renders_with_boss_and_banner() {
 }
 
 @test
+fn sea_cache_is_transparent() {
+    // The cached ocean rows must render exactly what the per-cell path does,
+    // across ticks (both scroll clocks move) and a stage change (new theme).
+    let g = fresh();
+    let cache = screen.new_sea_cache();
+    var i = 0;
+    while (i < 40) {
+        shmup.tick(g);
+        if (i == 20) {
+            g.stage = g.stage + 1;
+        }
+        let plain = screen.frame(g, 0, false, false);
+        let cached = screen.frame_with(g, 0, false, false, cache);
+        assert_eq(cached.len(), plain.len());
+        var y = 0;
+        while (y < plain.len()) {
+            assert_eq(cached[y], plain[y]);
+            y = y + 1;
+        }
+        i = i + 1;
+    }
+}
+
+@test
 fn frame_has_fixed_shape() {
     let g = fresh();
     let f = screen.frame(g, 0, false, false);

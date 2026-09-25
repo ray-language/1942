@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rayala
+//
+// The pure parsers behind the terminal probes: the kitty keyboard reply
+// detector, the DA sentinel and the key-event type sub-parameter.
+import app;
+
+@test
+fn kitty_flags_reply_is_detected() {
+    // CSI ? 0 u (kitty flags) then CSI ? 62 ; 22 c (Primary DA).
+    assert(app.contains_kitty_reply(b"\x1b[?0u\x1b[?62;22c"));
+    assert(app.contains_kitty_reply(b"junk\x1b[?15u"));
+}
+
+@test
+fn da_only_reply_is_not_kitty() {
+    assert(!app.contains_kitty_reply(b"\x1b[?62;22c"));
+    assert(!app.contains_kitty_reply(b""));
+    assert(!app.contains_kitty_reply(b"\x1b[?"));
+    // A 'u' after the DA terminator belongs to no CSI ? reply.
+    assert(!app.contains_kitty_reply(b"\x1b[?1;2cu"));
+}
+
+@test
+fn kitty_reply_after_a_da_reply_is_still_found() {
+    assert(app.contains_kitty_reply(b"\x1b[?1;2c\x1b[?3u"));
+}
+
+@test
+fn da_sentinel_is_any_c() {
+    assert(app.saw_da_reply(b"\x1b[?62;22c"));
+    assert(!app.saw_da_reply(b"\x1b[?0u"));
+    assert(!app.saw_da_reply(b""));
+}
+
+@test
+fn kitty_event_reads_the_type_sub_parameter() {
+    assert_eq(app.kitty_event(b"\x1b[1;1:3D"), 3);
+    assert_eq(app.kitty_event(b"\x1b[1;1:2A"), 2);
+    assert_eq(app.kitty_event(b"\x1b[D"), 1);
+    assert_eq(app.kitty_event(b"a"), 1);
+    assert_eq(app.kitty_event(b"\x1b[1;1:A"), 1);
+}

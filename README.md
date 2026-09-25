@@ -116,7 +116,7 @@ raylang.
 | 30 fps con input sin bloqueo + diff mínimo; diagonales (kitty) | ✅ |
 | Música reactiva WSG sobre `std/audio` (8 eventos + drone) | ✅ |
 | Pausa, reinicio, `--bench`, `--seed`, `--no-music` | ✅ |
-| Tests (reglas puras + shape del frame + synth byte a byte) | ✅ 32 |
+| Tests (reglas puras + shape del frame + synth byte a byte + sondas del terminal) | ✅ 38 |
 | Sprites PNG (kitty graphics) integrados al render en vivo; fallback a glifos | ✅ |
 
 ## Desarrollo

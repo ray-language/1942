@@ -73,36 +73,24 @@ pub fn init(force: bool) -> Sprites {
     if (!force && !term.capabilities().kitty_graphics) {
         return Sprites { ok: false };
     }
+    let assets = [
+        (ID_FIGHTER, "assets/fighter.png"),
+        (ID_ZERO, "assets/zero.png"),
+        (ID_WEAVER, "assets/weaver.png"),
+        (ID_LEADER, "assets/leader.png"),
+        (ID_POWER, "assets/power.png"),
+        (ID_BOSS, "assets/boss.png"),
+        (ID_ROLL0, "assets/fighter_roll0.png"),
+        (ID_ROLL1, "assets/fighter_roll1.png"),
+        (ID_ROLL2, "assets/fighter_roll2.png"),
+        (ID_ROLL3, "assets/fighter_roll3.png")
+    ];
+    // Transmit every sprite even after a miss (same as before): ok is the AND.
     var ok = true;
-    if (!transmit(ID_FIGHTER, "assets/fighter.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_ZERO, "assets/zero.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_WEAVER, "assets/weaver.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_LEADER, "assets/leader.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_POWER, "assets/power.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_BOSS, "assets/boss.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_ROLL0, "assets/fighter_roll0.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_ROLL1, "assets/fighter_roll1.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_ROLL2, "assets/fighter_roll2.png")) {
-        ok = false;
-    }
-    if (!transmit(ID_ROLL3, "assets/fighter_roll3.png")) {
-        ok = false;
+    for (id, key) in assets.iter() {
+        if (!transmit(id, key)) {
+            ok = false;
+        }
     }
     Sprites { ok: ok }
 }

@@ -171,7 +171,11 @@ pub fn demo(force: bool) -> int {
     let s = init(force);
     if (!s.ok) {
         io.write(
-            at(2, 3) + "Gráficos kitty no disponibles aquí (o bajo tmux)." + at(3, 3) + "El juego usa la rejilla de glifos — nada que hacer." + at(5, 3)
+            at(2, 3)
+                + "Gráficos kitty no disponibles aquí (o bajo tmux)."
+                + at(3, 3)
+                + "El juego usa la rejilla de glifos — nada que hacer."
+                + at(5, 3)
         );
         io.write(e + "[?25h");
         io.flush();

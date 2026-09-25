@@ -416,7 +416,7 @@ fn dispatch_key(a: App, k: Key, event: int, now: int) {
 // The kitty keyboard protocol tags each key event with a type in a ':' sub-
 // parameter (1 press, 2 repeat, 3 release). Read it off the raw sequence the
 // decoder consumed; a sequence without one (legacy or plain key) is a press.
-fn kitty_event(seq: bytes) -> int {
+pub fn kitty_event(seq: bytes) -> int {
     match (from_utf8(seq)) {
         Result.Ok(s) => {
             let n = s.len();
@@ -434,16 +434,14 @@ fn kitty_event(seq: bytes) -> int {
             var j = last_colon + 1;
             var val = 0;
             var any = false;
-            var scanning = true;
-            while (j < n && scanning) {
+            while (j < n) {
                 let code = char_code(s[j]);
-                if (code >= 48 && code <= 57) {
-                    val = val * 10 + (code - 48);
-                    any = true;
-                    j = j + 1;
-                } else {
-                    scanning = false;
+                if (code < 48 || code > 57) {
+                    break;
                 }
+                val = val * 10 + (code - 48);
+                any = true;
+                j = j + 1;
             }
             if (any) { val } else { 1 }
         },
@@ -453,8 +451,7 @@ fn kitty_event(seq: bytes) -> int {
 
 fn drain_keys(a: App) {
     let now = time.monotonic();
-    var more = true;
-    while (more && a.pending.len() > 0 && !a.quit) {
+    while (a.pending.len() > 0 && !a.quit) {
         match (term.decode(a.pending)) {
             Option.Some(decoded) => {
                 let event = if (a.kitty) {
@@ -466,69 +463,59 @@ fn drain_keys(a: App) {
                 dispatch_key(a, decoded.0, event, now);
             },
             Option.None => {
-                more = false;
-                if (a.pending == b"\x1b") {
-                    a.pending = b"";
-                } else if (a.pending.len() > 8) {
+                if (a.pending.len() > 8) {
                     // A stray terminal reply must never wedge the key stream:
                     // drop a byte and resync.
                     a.pending = a.pending.sub_bytes(1, a.pending.len());
-                    more = true;
+                    continue;
                 }
+                // Incomplete prefix: wait for the rest (a lone ESC is dropped).
+                if (a.pending == b"\x1b") {
+                    a.pending = b"";
+                }
+                break;
             },
         }
     }
 }
 
 // A kitty flags reply is CSI ? <digits> u; a Primary DA reply is CSI ? ... c.
-// Both open with ESC [ ? — tell them apart by the terminator.
-fn contains_kitty_reply(buf: bytes) -> bool {
-    match (from_utf8(buf)) {
-        Result.Ok(s) => {
-            let n = s.len();
-            var i = 0;
-            var found = false;
-            while (i + 2 < n && !found) {
-                if (char_code(s[i]) == 27 && s[i + 1] == '[' && s[i + 2] == '?') {
-                    var j = i + 3;
-                    var scanning = true;
-                    while (j < n && scanning) {
-                        let c = s[j];
-                        if (c == 'u') {
-                            found = true;
-                            scanning = false;
-                        } else if (c == 'c') {
-                            scanning = false;
-                        } else {
-                            j = j + 1;
-                        }
+// Both open with ESC [ ? — tell them apart by the terminator. Scans octets
+// (bytes.index_of), so a non-UTF-8 byte in the probe reply cannot hide it.
+pub fn contains_kitty_reply(buf: bytes) -> bool {
+    var rest = buf;
+    while (true) {
+        match (rest.index_of(b"\x1b[?")) {
+            Option.Some(i) => {
+                var j = i + 3;
+                while (j < rest.len()) {
+                    let c = rest[j];
+                    if (c == 117) {
+                        // 'u': the kitty flags reply.
+                        return true;
                     }
+                    if (c == 99) {
+                        // 'c': a DA reply; look for another CSI ? after it.
+                        break;
+                    }
+                    j = j + 1;
                 }
-                i = i + 1;
-            }
-            found
-        },
-        Result.Err(e) => false,
+                rest = rest.sub_bytes(i + 1, rest.len());
+            },
+            Option.None => {
+                return false;
+            },
+        }
     }
+    false
 }
 
 // The Primary DA reply ends in 'c' and is the last thing the terminal sends
 // back, so it marks the end of the probe responses.
-fn saw_da_reply(buf: bytes) -> bool {
-    match (from_utf8(buf)) {
-        Result.Ok(s) => {
-            let n = s.len();
-            var i = 0;
-            var found = false;
-            while (i < n && !found) {
-                if (s[i] == 'c') {
-                    found = true;
-                }
-                i = i + 1;
-            }
-            found
-        },
-        Result.Err(e) => false,
+pub fn saw_da_reply(buf: bytes) -> bool {
+    match (buf.index_of(b"c")) {
+        Option.Some(i) => true,
+        Option.None => false,
     }
 }
 
@@ -541,21 +528,20 @@ fn detect_kitty() -> bool {
     io.write(e + "[?u" + e + "[c");
     io.flush();
     var buf = b"";
-    var reading = true;
     var budget = 8;
-    while (reading && budget > 0) {
+    while (budget > 0) {
         match (io.read_timeout(64, 40)) {
             io.ReadResult.Data(chunk) => {
                 buf = buf + chunk;
                 if (saw_da_reply(buf)) {
-                    reading = false;
+                    break;
                 }
             },
             io.ReadResult.TimedOut => {
-                reading = false;
+                break;
             },
             io.ReadResult.Eof => {
-                reading = false;
+                break;
             },
         }
         budget = budget - 1;

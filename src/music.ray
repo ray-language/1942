@@ -56,23 +56,21 @@ fn pump(h: int, ch: Channel<int>) {
     var written = 0;
     var running = true;
     while (running) {
-        var draining = true;
-        while (draining) {
+        // Apply every queued event before synthesizing the next sub-step.
+        while (running) {
             match (try_recv(ch)) {
                 Received.Got(ev) => {
                     if (ev == wsg.EV_STOP) {
                         running = false;
-                        draining = false;
                     } else {
                         wsg.apply(t, ev);
                     }
                 },
                 Received.Empty => {
-                    draining = false;
+                    break;
                 },
                 Received.Closed => {
                     running = false;
-                    draining = false;
                 },
             }
         }

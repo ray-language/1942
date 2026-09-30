@@ -39,6 +39,30 @@ pub const ID_ROLL2: int = 9;
 
 pub const ID_ROLL3: int = 10;
 
+// Every sprite: its kitty image id and the embedded PNG it is decoded from.
+const ASSETS: [(int, string)] = [
+    (ID_FIGHTER, "assets/fighter.png"),
+    (ID_ZERO, "assets/zero.png"),
+    (ID_WEAVER, "assets/weaver.png"),
+    (ID_LEADER, "assets/leader.png"),
+    (ID_POWER, "assets/power.png"),
+    (ID_BOSS, "assets/boss.png"),
+    (ID_ROLL0, "assets/fighter_roll0.png"),
+    (ID_ROLL1, "assets/fighter_roll1.png"),
+    (ID_ROLL2, "assets/fighter_roll2.png"),
+    (ID_ROLL3, "assets/fighter_roll3.png")
+];
+
+// The planes the --sprites gallery shows, one per row, with their labels.
+const GALLERY: [(int, string)] = [
+    (ID_FIGHTER, "caza"),
+    (ID_ZERO, "zero"),
+    (ID_WEAVER, "weaver"),
+    (ID_LEADER, "líder"),
+    (ID_POWER, "arma"),
+    (ID_BOSS, "jefe")
+];
+
 // The sprite set's readiness. ok = every PNG decoded and transmitted; when
 // false the caller renders glyphs exactly as before.
 pub struct Sprites {
@@ -73,21 +97,9 @@ pub fn init(force: bool) -> Sprites {
     if (!force && !term.capabilities().kitty_graphics) {
         return Sprites { ok: false };
     }
-    let assets = [
-        (ID_FIGHTER, "assets/fighter.png"),
-        (ID_ZERO, "assets/zero.png"),
-        (ID_WEAVER, "assets/weaver.png"),
-        (ID_LEADER, "assets/leader.png"),
-        (ID_POWER, "assets/power.png"),
-        (ID_BOSS, "assets/boss.png"),
-        (ID_ROLL0, "assets/fighter_roll0.png"),
-        (ID_ROLL1, "assets/fighter_roll1.png"),
-        (ID_ROLL2, "assets/fighter_roll2.png"),
-        (ID_ROLL3, "assets/fighter_roll3.png")
-    ];
     // Transmit every sprite even after a miss (same as before): ok is the AND.
     var ok = true;
-    for (id, key) in assets.iter() {
+    for (id, key) in ASSETS.iter() {
         if (!transmit(id, key)) {
             ok = false;
         }
@@ -170,19 +182,17 @@ pub fn demo(force: bool) -> int {
         return 0;
     }
     io.write(at(1, 3) + esc() + "[1;93m✈ 1942 — sprites PNG (kitty graphics)" + esc() + "[0m");
-    let ids = [ID_FIGHTER, ID_ZERO, ID_WEAVER, ID_LEADER, ID_POWER, ID_BOSS];
-    let names = ["caza", "zero", "weaver", "líder", "arma", "jefe"];
     var i = 0;
-    while (i < ids.len()) {
+    for (id, name) in GALLERY.iter() {
         let row = 3 + i * 3;
-        io.write(at(row, 4) + names[i]);
+        io.write(at(row, 4) + name);
         // place(id, col, row, cols, rows): sprites at column 14, one per label
         // row. 4×2 cells keeps the square plane art undistorted (a cell is
         // about twice as tall as wide), with a row of gap between them.
-        place(s, ids[i], 14, row, 4, 2);
+        place(s, id, 14, row, 4, 2);
         i = i + 1;
     }
-    io.write(at(3 + ids.len() * 3 + 1, 3) + "una tecla para salir…");
+    io.write(at(3 + GALLERY.len() * 3 + 1, 3) + "una tecla para salir…");
     io.flush();
     // Hold the gallery until a keypress (raw so a single key returns at once).
     term.raw(fn() -> int {

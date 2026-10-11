@@ -6,7 +6,9 @@
 // wall-clock lead (LEAD_MS) so game events reach the ear promptly without
 // riding the whole device queue. Events arrive through a channel; a drain +
 // close ends the fiber without clipping the tail. No device → silent game,
-// nothing else changes. Lifted from rallyx, which proved the pacing.
+// nothing else changes. Lifted from rallyx, which proved the pacing. The
+// lead stays on raylang 1.27.21: open_latency with a 20-80 ms hint still
+// queues ~120 ms on macOS, four times this lead.
 import std/audio;
 import std/time;
 import wsg;

@@ -2,18 +2,18 @@
 // Copyright 2026 Rayala
 //
 // 1942 — the reactive music pump on std/audio: a fiber synthesizes WSG
-// sub-steps and writes PCM straight to the device, keeping a small
-// wall-clock lead (LEAD_MS) so game events reach the ear promptly without
-// riding the whole device queue. Events arrive through a channel; a drain +
-// close ends the fiber without clipping the tail. No device → silent game,
-// nothing else changes. Lifted from rallyx, which proved the pacing. The
-// lead stays on raylang 1.27.21: open_latency with a 20-80 ms hint still
-// queues ~120 ms on macOS, four times this lead.
+// sub-steps and writes PCM straight to the device. Backpressure is the
+// pacing: the output is opened with a small latency hint (LATENCY_MS), so
+// audio.write parks once ~that much is queued and game events reach the ear
+// promptly (measured on raylang 1.27.50, macOS: a 30 ms hint queues ~40 ms).
+// Events arrive through a channel; a drain + close ends the fiber without
+// clipping the tail. No device → silent game, nothing else changes. Lifted
+// from rallyx, which proved the pacing.
 import std/audio;
-import std/time;
 import wsg;
 
-const LEAD_MS: int = 30;
+// Total queued between write and the speaker (std/audio accepts 20-1000).
+const LATENCY_MS: int = 30;
 
 pub struct Music {
     ch: Channel<int>,
@@ -27,7 +27,7 @@ pub fn off() -> Music {
 
 pub fn start() -> Music {
     let ch: Channel<int> = Channel.bounded(64);
-    match (audio.open(wsg.RATE, 1)) {
+    match (audio.open_latency(wsg.RATE, 1, LATENCY_MS)) {
         Result.Ok(h) => {
             spawn(fn() {
                 pump(h, ch);
@@ -54,8 +54,6 @@ pub fn stop(m: Music) {
 
 fn pump(h: int, ch: Channel<int>) {
     let t = wsg.new_tracker();
-    let t0 = time.monotonic();
-    var written = 0;
     var running = true;
     while (running) {
         // Apply every queued event before synthesizing the next sub-step.
@@ -77,18 +75,12 @@ fn pump(h: int, ch: Channel<int>) {
             }
         }
         if (running) {
-            let ahead = written - (time.monotonic() - t0);
-            if (ahead > LEAD_MS) {
-                time.sleep(20);
-            } else {
-                match (audio.write(h, wsg.tick(t))) {
-                    Result.Ok(n) => {
-                        written = written + wsg.SUB_MS;
-                    },
-                    Result.Err(dead) => {
-                        running = false;
-                    },
-                }
+            // Parks while ~LATENCY_MS is queued: the device sets the tempo.
+            match (audio.write(h, wsg.tick(t))) {
+                Result.Ok(n) => {},
+                Result.Err(dead) => {
+                    running = false;
+                },
             }
         }
     }

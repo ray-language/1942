@@ -18,7 +18,9 @@ $ 1942 --bench      # coste de frame + jitter de sleep
 dispositivo con `std/audio` (el patrón que estrenó rallyx): 4 voces de
 wavetable + ruido LFSR (`src/wsg.ray`, puro y determinista — la partitura se
 testea byte a byte), mezcladas a s16le 22050 Hz por una fibra (`src/music.ray`)
-con un adelanto de reloj de pared de ~30 ms. El juego le manda eventos por
+que marca el paso con la contrapresión de `audio.write`, sobre una salida abierta
+con `audio.open_latency` a 30 ms (~40 ms en cola, medido en macOS con raylang
+1.27.50). El juego le manda eventos por
 canal: **chirrido** del cañón en cada ráfaga, **estallido** de ruido al derribar
 un enemigo, **barrido** de choque al perder una vida, **whoosh** ascendente en
 el tonel, **fanfarria** al subir de fase y la **despedida** en el game over —
